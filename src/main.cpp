@@ -87,7 +87,8 @@ enum OpCodes : uint16_t {
     PushI32,
     PushI64,
     ListBegin,
-    ListEnd
+    ListEnd,
+    ListExpand
 };
 
 enum DataType : uint16_t {
@@ -169,18 +170,18 @@ struct BasikI64 {
 };
 
 struct BasikList {
-    Stack<basik_val> data;
+    Stack<basik_val>* data;
     BasikList() {
-        this->data = Stack<basik_val>();
+        this->data = new Stack<basik_val>();
     }
     void append(basik_val v) {
-        this->data.push(new basik_val{v.type,v.data});
+        this->data->push(new basik_val{v.type,v.data});
     }
     basik_val operator[](size_t i) {
-        return *this->data.data[i];
+        return *this->data->data[i];
     }
     ~BasikList() {
-        this->data.~Stack();
+        delete this->data;
     }
 };
 
@@ -206,20 +207,33 @@ int main() {
             "\x06\x00\x00\x00" //
             "HELLO\x00"        //
 
-        "\x01\x00\x00\x00"     // Variable data pool
+        "\x02\x00\x00\x00"     // Variable data pool
             "x\0"              // x
+            "y\0"              // y
         
-        "\x08\x00" // Push I32
-            "\x42\x00\x00\x00"
+        "\x0a\x00"             // List Begin
+
+        "\x08\x00"             // Push I32
+            "\x42\x00\x00\x00" // 66
+
+        "\x08\x00"             // Push I32
+            "\xff\x01\x00\x00" // 511
+
+        "\x0b\x00"             // List End
+        
+        "\x0c\x00"             // List Expand
 
         "\x01\x00"             // Store Simple
             "\x00\x00\x00\x00" // 0 (x)
+
+        "\x01\x00"             // Store Simple
+            "\x01\x00\x00\x00" // 0 (y)
 
         "\x02\x00"             // Load Simple
             "\x00\x00\x00\x00" // 0 (x)
 
-        "\x01\x00"             // Store Simple
-            "\x00\x00\x00\x00" // 0 (x)
+        "\x02\x00"             // Load Simple
+            "\x01\x00\x00\x00" // 0 (y)
         
         "\x00\x00" // End of program
     ;
@@ -270,10 +284,11 @@ int main() {
         if (op == OpCodes::StoreSimple) {
             basik_val val = stack_pop();
             uint32_t var = *(uint32_t*)prog; prog += 4;
-            if (val.data = nullptr) {
+            if (val.data == nullptr) {
                 fprintf(stderr,"Got NULL for StoreSimple\n");
                 exit(1);
             }
+            printf("STOR %d (%s) : %d\n",var,simple_vars[var]->name,*((BasikI32*)val.data)->data);
             simple_vars[var]->data = new basik_val{val.type,val.data};
         } else
 
@@ -286,6 +301,7 @@ int main() {
                 fprintf(stderr,"Undefined variable `%s`\n",simple_vars[var]->name);
                 exit(1);
             }
+            printf("LOAD %d (%s) : %d\n",var,simple_vars[var]->name,*((BasikI32*)val->data)->data);
             stack_push(basik_val{val->type,val->data});
         } else
 
@@ -334,12 +350,24 @@ int main() {
             size_t base = *list_stack.pop();
             size_t list_size = stacki-base;
             BasikList* list = new BasikList();
-            basik_val* valbuff = new basik_val[list_size]; new char();
             for (size_t i = 0; i < list_size; i++) {
                 list->append(stack[base+i]);
             }
             for (size_t i = 0; i < list_size; i++) stack_pop();
             stack_push(basik_val{DataType::List,list});
+        } else
+        if (op == OpCodes::ListExpand) {
+            basik_val val = stack_pop();
+            if (val.type == DataType::List) {
+                BasikList l = *(BasikList*)val.data;
+                for (size_t i = 0; i < l.data->size; i++) {
+                    basik_val v = l[l.data->size-i-1];
+                    stack_push(basik_val{v.type,v.data});
+                }
+            } else {
+                fprintf(stderr,"Unsupported data type for list expand\n");
+                exit(1);
+            }
         }
 
         else {

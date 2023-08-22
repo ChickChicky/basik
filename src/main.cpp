@@ -177,7 +177,7 @@ struct BasikList {
     void append(basik_val v) {
         this->data->push(new basik_val{v.type,v.data});
     }
-    basik_val operator[](size_t i) {
+    basik_val inline const operator[](size_t i) {
         return *this->data->data[i];
     }
     ~BasikList() {
@@ -187,6 +187,11 @@ struct BasikList {
 
 basik_val stack[65536];
 size_t stacki = 0;
+
+Stack<size_t> list_stack;
+
+basik_var** simple_vars;
+Stack<basik_var> dynamic_vars;
 
 bool stack_push(basik_val v) {
     if (stacki >= sizeof(stack)) return false;
@@ -198,7 +203,33 @@ basik_val stack_pop() {
     return stack[--stacki];
 }
 
-Stack<size_t> list_stack;
+/**
+ * Finds a dynamic variable with the provided name
+ * returns `nullptr` if it wasn't found
+ */
+basik_val* dynvar_get(const char* name) {
+    for (size_t i = 0; i < dynamic_vars.size; i++) {
+        basik_var* v = dynamic_vars.data[i];
+        if (v != nullptr && !strcmp(v->name,name)) return v->data;
+    }
+    return nullptr;
+}
+
+/**
+ * Sets a dynamic variable with the provided name to the provided value
+ */
+void dynvar_set(const char* name, basik_val value) {
+    basik_var* v = new basik_var{new basik_val{value.type,value.data},name};
+    // Tries to find an empty space in the variables
+    for (size_t i = 0; i < dynamic_vars.size; i++) {
+        if (dynamic_vars.data[i] == nullptr) {
+            dynamic_vars.data[i] = v;
+            return;
+        }
+    }
+    // Adds a new one if no space was found
+    dynamic_vars.push(v);
+}
 
 int main() {
 
@@ -211,29 +242,14 @@ int main() {
             "x\0"              // x
             "y\0"              // y
         
-        "\x0a\x00"             // List Begin
-
         "\x08\x00"             // Push I32
             "\x42\x00\x00\x00" // 66
 
-        "\x08\x00"             // Push I32
-            "\xff\x01\x00\x00" // 511
+        "\x03\x00"             // Store Dynamic
+            "z\0"              // "z"
 
-        "\x0b\x00"             // List End
-        
-        "\x0c\x00"             // List Expand
-
-        "\x01\x00"             // Store Simple
-            "\x00\x00\x00\x00" // 0 (x)
-
-        "\x01\x00"             // Store Simple
-            "\x01\x00\x00\x00" // 0 (y)
-
-        "\x02\x00"             // Load Simple
-            "\x00\x00\x00\x00" // 0 (x)
-
-        "\x02\x00"             // Load Simple
-            "\x01\x00\x00\x00" // 0 (y)
+        "\x04\x00"             // Load Dynamic
+            "z\0"              // "z"
         
         "\x00\x00" // End of program
     ;
@@ -257,7 +273,7 @@ int main() {
     uint32_t simple_variable_data_sz = *(uint32_t*)ptr;
     ptr += 4;
 
-    basik_var** simple_vars = new basik_var*[simple_variable_data_sz];
+    simple_vars = new basik_var*[simple_variable_data_sz];
 
     for (uint32_t i = 0; i < simple_variable_data_sz; i++) {
         size_t l = strlen((const char*)ptr);
@@ -288,8 +304,18 @@ int main() {
                 fprintf(stderr,"Got NULL for StoreSimple\n");
                 exit(1);
             }
-            printf("STOR %d (%s) : %d\n",var,simple_vars[var]->name,*((BasikI32*)val.data)->data);
             simple_vars[var]->data = new basik_val{val.type,val.data};
+        } else
+
+        if (op == OpCodes::StoreDynamic) {
+            basik_val val = stack_pop();
+            if (val.data == nullptr) {
+                fprintf(stderr,"Got NULL for StoreDynamic\n");
+                exit(1);
+            }
+            const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
+            printf("STOR DYN %s = %d\n",varname,*((BasikI32*)val.data)->data);
+            dynvar_set(varname,val);
         } else
 
         // Load
@@ -301,7 +327,17 @@ int main() {
                 fprintf(stderr,"Undefined variable `%s`\n",simple_vars[var]->name);
                 exit(1);
             }
-            printf("LOAD %d (%s) : %d\n",var,simple_vars[var]->name,*((BasikI32*)val->data)->data);
+            stack_push(basik_val{val->type,val->data});
+        } else
+
+        if (op == OpCodes::LoadDynamic) {
+            const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
+            basik_val* val = dynvar_get(varname);
+            if (val == nullptr) {
+                fprintf(stderr,"Undefined variable `%s`\n",varname);
+                exit(1);
+            }
+            printf("LOAD DYN %s = %d\n",varname,*((BasikI32*)val->data)->data);
             stack_push(basik_val{val->type,val->data});
         } else
 

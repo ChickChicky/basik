@@ -5,11 +5,6 @@
 
 using namespace std;
 
-template<typename T>
-T ceildiv(T a, T b) {
-    return (a/b) + ((a%b)?(T)1:(T)0);
-}
-
 struct Buffer {
 
     size_t    size;
@@ -83,7 +78,9 @@ struct Stack {
 enum OpCodes : uint16_t {
     End,
     StoreSimple,
+    LoadSimple,
     StoreDynamic,
+    LoadDynamic,
     PushString,
     PushChar,
     PushI16,
@@ -113,7 +110,6 @@ struct basik_val {
 };
 
 struct basik_var {
-    DataType type;
     basik_val* data;
     const char* name;
 };
@@ -201,10 +197,6 @@ basik_val stack_pop() {
     return stack[--stacki];
 }
 
-basik_var* new_var(DataType type) {
-    return new basik_var{type,nullptr,nullptr};
-}
-
 Stack<size_t> list_stack;
 
 int main() {
@@ -214,17 +206,21 @@ int main() {
             "\x06\x00\x00\x00" //
             "HELLO\x00"        //
 
-        "\x02\x00\x00\x00"     // Variable data pool
-            "\x00\x00"         // String x
-            "\x01\x00"         // I32    y
+        "\x01\x00\x00\x00"     // Variable data pool
+            "x\0"              // x
         
-        "\x08\x00" // Begin List
-        "\x06\x00" // Push I32
-            "\x42\x00\x00\x00" 
-        "\x06\x00" // Push I32
-            "\xff\x01\x00\x00"
-        "\x09\x00" // End List
+        "\x08\x00" // Push I32
+            "\x42\x00\x00\x00"
 
+        "\x01\x00"             // Store Simple
+            "\x00\x00\x00\x00" // 0 (x)
+
+        "\x02\x00"             // Load Simple
+            "\x00\x00\x00\x00" // 0 (x)
+
+        "\x01\x00"             // Store Simple
+            "\x00\x00\x00\x00" // 0 (x)
+        
         "\x00\x00" // End of program
     ;
 
@@ -244,14 +240,15 @@ int main() {
 
     // Variable Data Processing
 
-    uint32_t variable_data_sz = *(uint32_t*)ptr;
+    uint32_t simple_variable_data_sz = *(uint32_t*)ptr;
     ptr += 4;
 
-    basik_var** vars = new basik_var*[variable_data_sz];
+    basik_var** simple_vars = new basik_var*[simple_variable_data_sz];
 
-    for (uint32_t i = 0; i < variable_data_sz; i++) {
-        vars[i] = new_var(*(DataType*)ptr);
-        ptr += sizeof(DataType);
+    for (uint32_t i = 0; i < simple_variable_data_sz; i++) {
+        size_t l = strlen((const char*)ptr);
+        simple_vars[i] = new basik_var{nullptr,(const char*)ptr};
+        ptr += l+1;
     }
 
     // Running
@@ -268,17 +265,28 @@ int main() {
             /* this should not even ever happen */
         } else
 
-        // Storage
+        // Store
 
         if (op == OpCodes::StoreSimple) {
             basik_val val = stack_pop();
             uint32_t var = *(uint32_t*)prog; prog += 4;
-            if (val.data != nullptr) {
-                vars[var]->data = new basik_val{val.type,val.data};
-            } else {
+            if (val.data = nullptr) {
                 fprintf(stderr,"Got NULL for StoreSimple\n");
                 exit(1);
             }
+            simple_vars[var]->data = new basik_val{val.type,val.data};
+        } else
+
+        // Load
+
+        if (op == OpCodes::LoadSimple) {
+            uint32_t var = *(uint32_t*)prog; prog += 4;
+            basik_val* val = simple_vars[var]->data;
+            if (val == nullptr) {
+                fprintf(stderr,"Undefined variable `%s`\n",simple_vars[var]->name);
+                exit(1);
+            }
+            stack_push(basik_val{val->type,val->data});
         } else
 
         // Integers
@@ -340,7 +348,7 @@ int main() {
         }
     }
 
-    // printf("`%s` `%u`\n",((BasikString*)vars[0]->data->data)->data,*((BasikI32*)vars[1]->data->data)->data);
+    // printf("`%s` `%u`\n",((BasikString*)simple_vars[0]->data->data)->data,*((BasikI32*)simple_vars[1]->data->data)->data);
 
     return 0;
 }

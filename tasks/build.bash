@@ -7,14 +7,14 @@ C_INPUT="./src/*.cpp"
 C_INCLUDE="-I ./ -I ./src/"
 C_EXTRA=""
 
-C_OUTPUT_WIN="./out/out.exe"
-C_OUTPUT_LINUX="./out/out"
+C_OUTPUT_WIN="./out/basik.exe"
+C_OUTPUT_LINUX="./out/basik"
 
 C_LIB_WIN=""
 C_LIB_LINUX=""
 
-B_SUCCESS="\e[32mSUCCESS\e[39m: Built <project>"
-B_ERROR_COMPILE="\e[31mERROR\e[39m: Could not build <project>"
+B_SUCCESS="\e[32mSUCCESS\e[39m: Built Basik"
+B_ERROR_COMPILE="\e[31mERROR\e[39m: Could not build Basik"
 
 ignorearg=""
 for arg in "$@"; do
@@ -33,6 +33,8 @@ for arg in "$@"; do
             C_EXTRA="$C_EXTRA -O0"
         elif [[ $arg == "-target" ]] ; then
             ignorearg="target"
+        elif [[ $arg == "-g" ]] ; then
+            C_EXTRA="$C_EXTRA -g"
         fi
     fi
 done

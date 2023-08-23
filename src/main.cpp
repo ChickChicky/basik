@@ -605,6 +605,14 @@ Result run(Env* env) {
             }
         }
 
+        else if (op == OpCodes::JumpIfNot) {
+            uint64_t addr = *(uint64_t*)prog; prog += 8;
+            basik_val* v = env->stack_pop();
+            if (!env->is_val_true(v)) {
+                prog = env->orig + addr;
+            }
+        }
+
         // ???
 
         else {
@@ -637,7 +645,7 @@ int main() {
 
         "\x13\x00" // Dup
 
-        "\x15\x00" // Jump If
+        "\x16\x00" // Jump If Not
             "\x20\x00\x00\x00\x00\x00\x00\x00" // 32
 
         "\x03\x00" // Store Dynamic

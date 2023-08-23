@@ -50,7 +50,8 @@ enum OpCodes : uint16_t {
     Pop,
     Dup,
     Jump,
-    JumpIf
+    JumpIf,
+    JumpIfNot
 };
 
 enum DataType : uint16_t {

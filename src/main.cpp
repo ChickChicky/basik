@@ -89,6 +89,7 @@ enum OpCodes : uint16_t {
     ListBegin,
     ListEnd,
     ListExpand,
+    RemoveDynamic,
     Add,
     Sub,
     Div,
@@ -221,6 +222,7 @@ struct Env {
     basik_var** simple_vars;
     Stack<basik_var> dynamic_vars;
     const_data_t** const_data;
+    const char* bytecode;
     uint8_t* ptr;
 
     Env() {
@@ -257,7 +259,14 @@ struct Env {
     }
 
     bool dynvar_rem(const char* name) {
-
+        for (size_t i = 0; i < dynamic_vars.size; i++) {
+            basik_var* v = dynamic_vars.data[i];
+            if (v != nullptr && !strcmp(v->name,name)) {
+                dynamic_vars.data[i] = nullptr;
+                return true;
+            }
+        }
+        return false;
     }
 
     bool stack_push(basik_val v) {
@@ -272,7 +281,9 @@ struct Env {
 
 };
 
-void pre_run(const char* bytecode, Env* env) {
+void pre_run(Env* env) {
+    const char*      &bytecode = env->bytecode;
+
     basik_var**      &simple_vars  = env->simple_vars;
     Stack<basik_var> &dynamic_vars = env->dynamic_vars;
     const_data_t**   &const_data   = env->const_data;
@@ -309,13 +320,13 @@ void pre_run(const char* bytecode, Env* env) {
 
 }
 
-Result run(const char* bytecode, Env* env) {
-
+Result run(Env* env) {
     basik_val* stack   = env->stack;
     size_t     &stacki = env->stacki;
 
     Stack<size_t>    &list_stack   = env->list_stack;
 
+    const char*      &bytecode     = env->bytecode;
     basik_var**      &simple_vars  = env->simple_vars;
     Stack<basik_var> &dynamic_vars = env->dynamic_vars;
     const_data_t**   &const_data   = env->const_data;
@@ -380,6 +391,13 @@ Result run(const char* bytecode, Env* env) {
             }
             printf("LOAD DYN %s = %d\n",varname,*((BasikI32*)val->data)->data);
             env->stack_push(basik_val{val->type,val->data});
+        } else
+
+        // Remove
+
+        if (op == OpCodes::RemoveDynamic) { // Cleans up a dynamic variable
+            const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
+            env->dynvar_rem(varname);
         } else
 
         // Integers
@@ -509,18 +527,28 @@ int main() {
         "\x08\x00"             // Push I32
             "\x01\x00\x00\x00" // 2
         
-        "\x0D\x00"             // Add
+        "\x0E\x00"             // Add
 
         "\x03\x00"             // Store Dynamic
+            "z\0"              // "z"
+
+        "\x04\x00"             // Load Dynamic
+            "z\0"              // "z"
+
+        "\x0D\x00"             // Remove Dynamic
+            "z\0"
+
+        "\x04\x00"             // Load Dynamic
             "z\0"              // "z"
         
         "\x00\x00" // End of program
     ;
 
     Env* env = new Env();
+    env->bytecode = (const char*)ptr;
 
-    pre_run((const char*)ptr,env);
-    run((const char*)ptr,env);
+    pre_run(env);
+    run(env);
 
     // printf("`%s` `%u`\n",((BasikString*)simple_vars[0]->data->data)->data,*((BasikI32*)simple_vars[1]->data->data)->data);
 

@@ -88,7 +88,11 @@ enum OpCodes : uint16_t {
     PushI64,
     ListBegin,
     ListEnd,
-    ListExpand
+    ListExpand,
+    Add,
+    Sub,
+    Div,
+    Mul
 };
 
 enum DataType : uint16_t {
@@ -99,6 +103,20 @@ enum DataType : uint16_t {
     I64,
     List
 };
+
+const char* DataTypeStr[] = {
+    "String",
+    "Char",
+    "I16",
+    "I32",
+    "I64",
+    "List",
+};
+
+constexpr inline const char* get_data_type_str(DataType dt) {
+    if (dt > sizeof(DataTypeStr)/sizeof(const char*)) return "<INVALID TYPE>";
+    return DataTypeStr[dt];
+}
 
 struct const_data_t {
     uint64_t sz;
@@ -185,81 +203,89 @@ struct BasikList {
     }
 };
 
-basik_val stack[65536];
-size_t stacki = 0;
+struct BasikException {
+    const char* text;
+    int64_t code;
+};
 
-Stack<size_t> list_stack;
+struct Result {
+    BasikException* except;
+    basik_val* value;
+};
 
-basik_var** simple_vars;
-Stack<basik_var> dynamic_vars;
+struct Env {
 
-bool stack_push(basik_val v) {
-    if (stacki >= sizeof(stack)) return false;
-    stack[stacki++] = v;
-    return true;
-}
+    basik_val* stack;
+    size_t stacki;
+    Stack<size_t> list_stack;
+    basik_var** simple_vars;
+    Stack<basik_var> dynamic_vars;
+    const_data_t** const_data;
+    uint8_t* ptr;
 
-basik_val stack_pop() {
-    return stack[--stacki];
-}
-
-/**
- * Finds a dynamic variable with the provided name
- * returns `nullptr` if it wasn't found
- */
-basik_val* dynvar_get(const char* name) {
-    for (size_t i = 0; i < dynamic_vars.size; i++) {
-        basik_var* v = dynamic_vars.data[i];
-        if (v != nullptr && !strcmp(v->name,name)) return v->data;
+    Env() {
+        this->stack = new basik_val[65536];
+        this->stacki = 0;
     }
-    return nullptr;
-}
 
-/**
- * Sets a dynamic variable with the provided name to the provided value
- */
-void dynvar_set(const char* name, basik_val value) {
-    basik_var* v = new basik_var{new basik_val{value.type,value.data},name};
-    // Tries to find an empty space in the variables
-    for (size_t i = 0; i < dynamic_vars.size; i++) {
-        if (dynamic_vars.data[i] == nullptr) {
-            dynamic_vars.data[i] = v;
-            return;
+    /**
+     * Sets a dynamic variable with the provided name to the provided value
+     */
+    void dynvar_set(const char* name, basik_val value) {
+        basik_var* v = new basik_var{new basik_val{value.type,value.data},name};
+        // Tries to find an empty space in the variables
+        for (size_t i = 0; i < dynamic_vars.size; i++) {
+            if (dynamic_vars.data[i] == nullptr) {
+                dynamic_vars.data[i] = v;
+                return;
+            }
         }
+        // Adds a new one if no space was found
+        dynamic_vars.push(v);
     }
-    // Adds a new one if no space was found
-    dynamic_vars.push(v);
-}
 
-int main() {
+    /**
+     * Finds a dynamic variable with the provided name
+     * returns `nullptr` if it wasn't found
+     */
+    basik_val* dynvar_get(const char* name) {
+        for (size_t i = 0; i < dynamic_vars.size; i++) {
+            basik_var* v = dynamic_vars.data[i];
+            if (v != nullptr && !strcmp(v->name,name)) return v->data;
+        }
+        return nullptr;
+    }
 
-    uint8_t* ptr = (uint8_t*)
-        "\x01\x00\x00\x00"     // Const data pool
-            "\x06\x00\x00\x00" //
-            "HELLO\x00"        //
+    bool dynvar_rem(const char* name) {
 
-        "\x02\x00\x00\x00"     // Variable data pool
-            "x\0"              // x
-            "y\0"              // y
-        
-        "\x08\x00"             // Push I32
-            "\x42\x00\x00\x00" // 66
+    }
 
-        "\x03\x00"             // Store Dynamic
-            "z\0"              // "z"
+    bool stack_push(basik_val v) {
+        if (stacki >= sizeof(stack)) return false;
+        stack[stacki++] = v;
+        return true;
+    }
 
-        "\x04\x00"             // Load Dynamic
-            "z\0"              // "z"
-        
-        "\x00\x00" // End of program
-    ;
+    const inline basik_val stack_pop() {
+        return stack[--stacki];
+    }
+
+};
+
+void pre_run(const char* bytecode, Env* env) {
+    basik_var**      &simple_vars  = env->simple_vars;
+    Stack<basik_var> &dynamic_vars = env->dynamic_vars;
+    const_data_t**   &const_data   = env->const_data;
+
+    uint8_t* &ptr = env->ptr;
+    ptr = (uint8_t*)bytecode;
 
     // Const Data Processing
 
     uint32_t const_data_sz = *(uint32_t*)ptr;
     ptr += 4;
 
-    const_data_t** const_data = new const_data_t*[const_data_sz];
+    const_data = new const_data_t*[const_data_sz];
 
     for (uint32_t i = 0; i < const_data_sz; i++) {
         uint32_t sz = *(uint32_t*)ptr;
@@ -281,6 +307,21 @@ int main() {
         ptr += l+1;
     }
 
+}
+
+Result run(const char* bytecode, Env* env) {
+
+    basik_val* stack   = env->stack;
+    size_t     &stacki = env->stacki;
+
+    Stack<size_t>    &list_stack   = env->list_stack;
+
+    basik_var**      &simple_vars  = env->simple_vars;
+    Stack<basik_var> &dynamic_vars = env->dynamic_vars;
+    const_data_t**   &const_data   = env->const_data;
+
+    uint8_t* &ptr = env->ptr;
+
     // Running
 
     uint8_t* prog = ptr;
@@ -298,7 +339,7 @@ int main() {
         // Store
 
         if (op == OpCodes::StoreSimple) {
-            basik_val val = stack_pop();
+            basik_val val = env->stack_pop();
             uint32_t var = *(uint32_t*)prog; prog += 4;
             if (val.data == nullptr) {
                 fprintf(stderr,"Got NULL for StoreSimple\n");
@@ -308,14 +349,14 @@ int main() {
         } else
 
         if (op == OpCodes::StoreDynamic) {
-            basik_val val = stack_pop();
+            basik_val val = env->stack_pop();
             if (val.data == nullptr) {
                 fprintf(stderr,"Got NULL for StoreDynamic\n");
                 exit(1);
             }
             const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
             printf("STOR DYN %s = %d\n",varname,*((BasikI32*)val.data)->data);
-            dynvar_set(varname,val);
+            env->dynvar_set(varname,val);
         } else
 
         // Load
@@ -327,40 +368,40 @@ int main() {
                 fprintf(stderr,"Undefined variable `%s`\n",simple_vars[var]->name);
                 exit(1);
             }
-            stack_push(basik_val{val->type,val->data});
+            env->stack_push(basik_val{val->type,val->data});
         } else
 
         if (op == OpCodes::LoadDynamic) {
             const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
-            basik_val* val = dynvar_get(varname);
+            basik_val* val = env->dynvar_get(varname);
             if (val == nullptr) {
                 fprintf(stderr,"Undefined variable `%s`\n",varname);
                 exit(1);
             }
             printf("LOAD DYN %s = %d\n",varname,*((BasikI32*)val->data)->data);
-            stack_push(basik_val{val->type,val->data});
+            env->stack_push(basik_val{val->type,val->data});
         } else
 
         // Integers
 
         if (op == OpCodes::PushChar) {
             uint8_t data = *(uint8_t*)prog;
-            stack_push(basik_val{DataType::Char,new BasikChar(data)});
+            env->stack_push(basik_val{DataType::Char,new BasikChar(data)});
             prog += 1;
         } else
         if (op == OpCodes::PushI16) {
             int16_t data = *(int16_t*)prog;
-            stack_push(basik_val{DataType::I16,new BasikI16(data)});
+            env->stack_push(basik_val{DataType::I16,new BasikI16(data)});
             prog += 2;
         } else
         if (op == OpCodes::PushI32) {
             int32_t data = *(int32_t*)prog;
-            stack_push(basik_val{DataType::I32,new BasikI32(data)});
+            env->stack_push(basik_val{DataType::I32,new BasikI32(data)});
             prog += 4;
         } else
         if (op == OpCodes::PushI64) {
             int64_t data = *(int64_t*)prog;
-            stack_push(basik_val{DataType::I64,new BasikI64(data)});
+            env->stack_push(basik_val{DataType::I64,new BasikI64(data)});
             prog += 8;
         } else
 
@@ -369,7 +410,7 @@ int main() {
         if (op == OpCodes::PushString) {
             int32_t val_addr = *(int32_t*)prog;
             const_data_t* data = const_data[val_addr];
-            stack_push(basik_val{DataType::String,new BasikString(data->sz,(const char*)data->data)});
+            env->stack_push(basik_val{DataType::String,new BasikString(data->sz,(const char*)data->data)});
             prog += 4;
         } else
 
@@ -389,19 +430,54 @@ int main() {
             for (size_t i = 0; i < list_size; i++) {
                 list->append(stack[base+i]);
             }
-            for (size_t i = 0; i < list_size; i++) stack_pop();
-            stack_push(basik_val{DataType::List,list});
+            for (size_t i = 0; i < list_size; i++) env->stack_pop();
+            env->stack_push(basik_val{DataType::List,list});
         } else
         if (op == OpCodes::ListExpand) {
-            basik_val val = stack_pop();
+            basik_val val = env->stack_pop();
             if (val.type == DataType::List) {
                 BasikList l = *(BasikList*)val.data;
                 for (size_t i = 0; i < l.data->size; i++) {
                     basik_val v = l[l.data->size-i-1];
-                    stack_push(basik_val{v.type,v.data});
+                    env->stack_push(basik_val{v.type,v.data});
                 }
             } else {
                 fprintf(stderr,"Unsupported data type for list expand\n");
+                exit(1);
+            }
+        } else
+
+        // Arithmetic
+
+        if (op == OpCodes::Add) {
+            basik_val a = env->stack_pop();
+            basik_val b = env->stack_pop();
+            if (a.type == DataType::Char) {
+                if (b.type != DataType::Char) {
+                    fprintf(stderr,"Unsupported '+' betwen Char and %s\n",get_data_type_str(b.type));
+                    exit(1);    
+                }
+                env->stack_push(basik_val{DataType::Char,new BasikChar(*((BasikChar*)a.data)->data+*((BasikChar*)b.data)->data)});
+            } else if (a.type == DataType::I16) {
+                if (b.type != DataType::I16) {
+                    fprintf(stderr,"Unsupported '+' betwen I16 and %s\n",get_data_type_str(b.type));
+                    exit(1);    
+                }
+                env->stack_push(basik_val{DataType::I16,new BasikI16(*((BasikI16*)a.data)->data+*((BasikI16*)b.data)->data)});
+            } else if (a.type == DataType::I32) {
+                if (b.type != DataType::I32) {
+                    fprintf(stderr,"Unsupported '+' betwen I32 and %s\n",get_data_type_str(b.type));
+                    exit(1);    
+                }
+                env->stack_push(basik_val{DataType::I32,new BasikI16(*((BasikI32*)a.data)->data+*((BasikI32*)b.data)->data)});
+            } else if (a.type == DataType::I64) {
+                if (b.type != DataType::I64) {
+                    fprintf(stderr,"Unsupported '+' betwen I64 and %s\n",get_data_type_str(b.type));
+                    exit(1);    
+                }
+                env->stack_push(basik_val{DataType::I64,new BasikI64(*((BasikI64*)a.data)->data+*((BasikI64*)b.data)->data)});
+            } else {
+                fprintf(stderr,"Unsupported data type for '+': `%s`\n",get_data_type_str(a.type));
                 exit(1);
             }
         }
@@ -411,6 +487,40 @@ int main() {
             exit(1);
         }
     }
+
+    return Result{nullptr,nullptr};
+
+}
+
+int main() {
+
+    uint8_t* ptr = (uint8_t*)
+        "\x01\x00\x00\x00"     // Const data pool
+            "\x06\x00\x00\x00" //
+            "HELLO\x00"        //
+
+        "\x02\x00\x00\x00"     // Variable data pool
+            "x\0"              // x
+            "y\0"              // y
+        
+        "\x08\x00"             // Push I32
+            "\x02\x00\x00\x00" // 1
+
+        "\x08\x00"             // Push I32
+            "\x01\x00\x00\x00" // 2
+        
+        "\x0D\x00"             // Add
+
+        "\x03\x00"             // Store Dynamic
+            "z\0"              // "z"
+        
+        "\x00\x00" // End of program
+    ;
+
+    Env* env = new Env();
+
+    pre_run((const char*)ptr,env);
+    run((const char*)ptr,env);
 
     // printf("`%s` `%u`\n",((BasikString*)simple_vars[0]->data->data)->data,*((BasikI32*)simple_vars[1]->data->data)->data);
 

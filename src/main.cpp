@@ -47,10 +47,10 @@ struct Stack {
         // Destroy all of the ghost data at the top of the stack
         for (size_t i = this->size; i < this->cap; i++) if (this->data[i] != nullptr) delete this->data[i];
         delete[] this->data;
-        printf("STAC %zu %zu\n",this->size,this->cap);
+        // printf("STAC %zu %zu\n",this->size,this->cap);
         this->data = new_data;
         this->cap = size;
-        printf("STAK %zu %zu\n",this->size,this->cap);
+        // printf("STAK %zu %zu\n",this->size,this->cap);
     }
     void push(T* value) {
         if (this->size >= this->cap-1) this->grow(this->size+this->cap_grow);
@@ -193,12 +193,12 @@ struct gc_t {
             gc_ref* r = refs.data[i];
             if (r != nullptr && refs.data[i]->v == v) {
                 r->c++;
-                printf("\t\t\t\tGC ADD %p %zu\n",v,r->c);
+                // printf("\t\t\t\tGC ADD %p %zu\n",v,r->c);
                 if (count != nullptr) *count = r->c;
                 return false;
             }
         }
-        printf("\t\t\t\tGC NEW %p 1\n",v);
+        // printf("\t\t\t\tGC NEW %p 1\n",v);
         if (count != nullptr) *count = 1;
         refs.push(new gc_ref{v,1});
         return true;
@@ -219,7 +219,7 @@ struct gc_t {
         for (size_t i = 0; i < refs.size; i++) {
             if (refs.data[i] != nullptr && refs.data[i]->v == v) {
                 if(refs.data[i]->c)--refs.data[i]->c;
-                printf("\t\t\t\tGC REM %p %zu\n",refs.data[i]->v,refs.data[i]->c);
+                // printf("\t\t\t\tGC REM %p %zu\n",refs.data[i]->v,refs.data[i]->c);
                 return true;
             }
         }
@@ -231,7 +231,7 @@ struct gc_t {
         for (size_t i = 0; i < this->refs.size; i++) {
             gc_ref* r = this->refs.data[i];
             if (r != nullptr && r->c == 0) {
-                printf("\t\t\t\tGC COL %p\n",r->v);
+                // printf("\t\t\t\tGC COL %p\n",r->v);
                 delete r->v;
                 delete r;
                 c++;
@@ -324,6 +324,18 @@ struct Env {
         return v;
     }
 
+    bool is_val_true(basik_val* v) {
+        if (v == nullptr) return false;
+        if (v->type == DataType::Char)   return *((BasikChar*)v->data)->data       != 0;
+        if (v->type == DataType::I16)    return *((BasikI16*)v->data)->data        != 0;
+        if (v->type == DataType::I32)    return *((BasikI32*)v->data)->data        != 0;
+        if (v->type == DataType::I64)    return *((BasikI64*)v->data)->data        != 0;
+        if (v->type == DataType::I64)    return *((BasikI64*)v->data)->data        != 0;
+        if (v->type == DataType::List)   return  ((BasikList*)v->data)->data->size != 0;
+        if (v->type == DataType::String) return  ((BasikString*)v->data)->len      != 0;
+        return false;
+    }
+
 };
 
 void pre_run(Env* env) {
@@ -390,7 +402,7 @@ Result run(Env* env) {
         uint16_t op = *(uint16_t*)prog;
         prog += 2;
 
-        printf("----- %d %zu -----\n",op,stacki);
+        // printf("----- %d %zu -----\n",op,stacki);
 
         if (op == OpCodes::End) {
             /* do nothing */
@@ -420,7 +432,7 @@ Result run(Env* env) {
             const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
             basik_val* var = env->dynvar_get(varname);
             if (var != nullptr) {
-                printf("\t\t\t\tR %p\n",var);
+                // printf("\t\t\t\tR %p\n",var);
                 gc.remove_ref(var);
             }
             printf("STOR DYN %s = %d\n",varname,*((BasikI32*)val->data)->data);
@@ -585,6 +597,14 @@ Result run(Env* env) {
             prog = env->orig + addr;
         }
 
+        else if (op == OpCodes::JumpIf) {
+            uint64_t addr = *(uint64_t*)prog; prog += 8;
+            basik_val* v = env->stack_pop();
+            if (env->is_val_true(v)) {
+                prog = env->orig + addr;
+            }
+        }
+
         // ???
 
         else {
@@ -613,13 +633,21 @@ int main() {
             "y\0"              // y
         
         "\x08\x00"             // Push I32
-            "\x02\x00\x00\x00" // 1
+            "\x00\x00\x00\x00" // 0
 
-        "\x03\x00"             // Store Dynamic
-            "z\0"              // "z"
+        "\x13\x00" // Dup
 
-        "\x14\x00"
-            "\x00\x00\x00\x00\x00\x00\x00\x00"
+        "\x15\x00" // Jump If
+            "\x20\x00\x00\x00\x00\x00\x00\x00" // 32
+
+        "\x03\x00" // Store Dynamic
+            "x\0"  // 'x'
+
+        "\x14\x00" // Jump
+            "\x24\x00\x00\x00\x00\x00\x00\x00" // 36
+
+        "\x03\x00"
+            "y\0"
 
         "\x00\x00" // End of program
     ;

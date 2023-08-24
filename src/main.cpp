@@ -12,6 +12,14 @@ constexpr inline const char* get_data_type_str(DataType dt) {
     return DataTypeStr[dt];
 }
 
+template<typename ... A>
+const char* format(const char* format, A ...args) {
+    int size = snprintf(nullptr,0,format,args...) + 1;
+    char* buff = new char[size];
+    snprintf(buff,(size_t)size,format,args...);
+    return buff;
+}
+
 /**
  * A structure to store data with an access towards the top and with configurable growth
  * NOTE: It will probably be put in the header at some point, but for now I'm a little too lazy because of the template thing
@@ -75,6 +83,17 @@ struct Stack {
     ~Stack() {
         delete[] this->data;
     }
+};
+
+/**
+ * A structure used to store global data that can be accessed across scopes.
+ * NOTE: It might be a little bit costy, so it should be used as little as possible.
+ * NOTE: For now it pretty much behaves like dynvars, except that is values can be used multiple times.
+ */
+struct Globals {
+
+    Stack<basik_var> vars;
+
 };
 
 // Basic Data Structures //
@@ -229,11 +248,12 @@ struct gc_t {
     inline size_t collect( void ) {
         size_t c = 0;
         for (size_t i = 0; i < this->refs.size; i++) {
-            gc_ref* r = this->refs.data[i];
+            gc_ref* &r = this->refs.data[i];
             if (r != nullptr && r->c == 0) {
                 // printf("\t\t\t\tGC COL %p\n",r->v);
                 delete r->v;
                 delete r;
+                r = nullptr;
                 c++;
             }
         }
@@ -247,21 +267,26 @@ struct Code {
 
     basik_val** stack;
     size_t stacki;
+    
     Stack<size_t> list_stack;
     basik_var** simple_vars;
     Stack<basik_var> dynamic_vars;
+    Globals* glob;
     const_data_t** const_data;
+
     const char* bytecode;
     uint8_t* ptr;
     uint8_t* orig;
     uint8_t* prog;
+
     gc_t* gc;
 
-    Code( gc_t* gc, const char* bytecode ) {
+    Code( gc_t* gc, Globals* glob, const char* bytecode ) {
         this->stack = new basik_val*[65536];
         this->stacki = 0;
         this->gc = gc;
         this->bytecode = bytecode;
+        this->glob = glob;
     }
 
     /**
@@ -312,6 +337,35 @@ struct Code {
             }
         }
         return false;
+    }
+
+    void globvar_set(const char* name, basik_val* value) {
+        gc->add_ref(value);
+        for (size_t i = 0; i < glob->vars.size; i++) {
+            basik_var* vv = glob->vars.data[i];
+            if (vv != nullptr && !strcmp(vv->name,name)) {
+                vv->data = value;
+                return;
+            }
+        }
+        basik_var* v = new basik_var{value,name};
+        for (size_t i = 0; i < glob->vars.size; i++) {
+            if (glob->vars.data[i] == nullptr) {
+                glob->vars.data[i] = v;
+                return;
+            }
+        }
+        glob->vars.push(v);
+    }
+
+    basik_val* globvar_get(const char* name) {
+        for (size_t i = 0; i < glob->vars.size; i++) {
+            basik_var* v = glob->vars.data[i];
+            if (v != nullptr && !strcmp(v->name,name)) {
+                return v->data;
+            }
+        }
+        return nullptr;
     }
 
     inline bool stack_push(basik_val* v) {
@@ -384,7 +438,7 @@ void pre_run(Code* code) {
 }
 
 Result run(Code* code) {
-    basik_val**  stack  = code->stack;
+    basik_val** &stack  = code->stack;
     size_t      &stacki = code->stacki;
 
     gc_t* &gc = code->gc;
@@ -433,7 +487,7 @@ Result run(Code* code) {
             const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
             basik_val* var = code->dynvar_get(varname);
             if (var != nullptr) gc->remove_ref(var);
-            printf("STOR DYN %s = %d\n",varname,*((BasikI32*)val->data)->data);
+            // printf("STOR DYN %s = %d\n",varname,*((BasikI32*)val->data)->data);
             code->dynvar_set(varname,val);
         }
 
@@ -450,7 +504,7 @@ Result run(Code* code) {
             const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
             basik_val* val = code->dynvar_get(varname);
             if (val == nullptr) return Result{new BasikException{format("Undefined variable `%s`",varname),instr},nullptr};
-            printf("LOAD DYN %s = %d\n",varname,*((BasikI32*)val->data)->data);
+            // printf("LOAD DYN %s = %d\n",varname,*((BasikI32*)val->data)->data);
             code->stack_push(val);
         }
 
@@ -648,7 +702,34 @@ Result run(Code* code) {
         gc->collect();
 
     }
+    
+    // Dynvars cleanup
+    for (size_t i = 0; i < dynamic_vars.size; i++) {
+        basik_var* &v = dynamic_vars.data[i];
+        if (v != nullptr && v->data != nullptr) {
+            gc->remove_ref(v->data);
+            delete v;
+            v = nullptr;
+        }
+    }
 
+    // Stack cleanup
+    for (size_t i = 0; i < stacki; i++)
+        gc->remove_ref(stack[i]);
+
+    stacki = 0;
+
+    gc->collect();
+    dynamic_vars.prune();
+
+    for (size_t i = 0; i < gc->refs.size; i++) {
+        gc_t::gc_ref* r = gc->refs.data[i];
+        printf("GC ENT %zu\t\t%p\t\t%zu\n",i,r->v,r->c);
+    }
+
+    // Removes the reference after the GC cleanup to make it live
+    // after the end of the call
+    if (ret) gc->remove_ref(ret);
 
     return Result{nullptr,ret};
 
@@ -668,25 +749,18 @@ int main() {
         "\x08\x00"             // Push I32
             "\x00\x00\x00\x00" // 0
 
-        "\x13\x00" // Dup
-
-        "\x16\x00" // Jump If Not
-            "\x20\x00\x00\x00\x00\x00\x00\x00" // 32
-
-        "\x03\x00" // Store Dynamic
-            "x\0"  // 'x'
-
-        "\x14\x00" // Jump
-            "\x24\x00\x00\x00\x00\x00\x00\x00" // 36
-
         "\x03\x00"
+            "y\0"
+
+        "\x04\x00"
             "y\0"
 
         "\x00\x00" // End of program
     ;
 
     gc_t* gc = new gc_t();
-    Code* code = new Code(gc,(const char*)bin);
+    Globals* glob = new Globals();
+    Code* code = new Code(gc,glob,(const char*)bin);
 
     pre_run(code);
 

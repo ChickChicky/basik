@@ -12,4 +12,4 @@ jobs:
       steps:
       - uses: actions/checkout@v2
       - name: build
-        run:  ./tasks/build.bash
+        run:  chmod +x ./tasks/build.bash && ./tasks/build.bash

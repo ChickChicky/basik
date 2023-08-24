@@ -16,6 +16,8 @@ using namespace std;
 
 // Forward-Decls //
 
+struct Code;
+
 struct const_data_t;
 struct basik_val;
 struct basik_var;
@@ -26,6 +28,7 @@ struct BasikI32;
 struct BasikI64;
 struct BasikString;
 struct BasikList;
+struct BasikFunction;
 
 struct BasikException;
 struct Result;
@@ -58,7 +61,9 @@ enum OpCodes : uint16_t {
     Dup,
     Jump,
     JumpIf,
-    JumpIfNot
+    JumpIfNot,
+    Return,
+    Call
 };
 
 enum DataType : uint16_t {
@@ -67,7 +72,13 @@ enum DataType : uint16_t {
     I16,
     I32,
     I64,
-    List
+    List,
+    Function
+};
+
+enum FunctionKind : uint8_t {
+    BuiltinFunction,
+    CodeFunction
 };
 
 const char* DataTypeStr[] = {
@@ -77,6 +88,7 @@ const char* DataTypeStr[] = {
     "I32",
     "I64",
     "List",
+    "Function",
 };
 
 constexpr inline const char* get_data_type_str(DataType dt);
@@ -143,19 +155,48 @@ struct BasikList {
     BasikList();
     ~BasikList();
 
-    void append(basik_val v);
+    void append(basik_val* v);
 
-    basik_val inline const operator[](size_t i);
+    constexpr inline basik_val* operator[](size_t i);
 };
 
+struct BasikFunction {
+    Code* code;
+    Result(*callback)(Code*,size_t,basik_val**);
+
+    BasikFunction(Code*code);
+    BasikFunction(Result(*callback)(Code*,size_t,basik_val**));
+    ~BasikFunction();
+};
 
 struct BasikException {
     // The text of the error
     const char* text;
-    // The address at which the erorr occured
-    size_t addr;
-};
+    // The addresses where the error has occured
+    size_t* trace;
+    // The code objects where the error has occured
+    Code**  code_trace;
+    // The trace size
+    size_t  traci;
 
+    BasikException(const char* text, size_t origin, Code* origin_code) {
+        this->text = text;
+        this->trace = new size_t[65536];
+        this->code_trace = new Code*[65536];
+        this->trace[0] = origin;
+        this->code_trace[0] = origin_code;
+        this->traci = 1;
+    }
+    ~BasikException() {
+        delete[] this->trace;
+    }
+
+    BasikException* add_trace(size_t addr, Code* code) {
+        this->code_trace[this->traci] = code;
+        this->trace[this->traci++]    = addr;
+        return this;
+    }
+};
 
 // Data Structures // 
 

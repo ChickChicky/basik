@@ -183,6 +183,14 @@ BasikFunction::~BasikFunction() {
 
 }
 
+// Bool
+BasikBool::BasikBool(bool data) {
+    this->data = new bool(data);
+}
+BasikBool::~BasikBool() {
+    delete this->data;
+}
+
 // Other Data Structures //
 
 Buffer::Buffer(size_t size) {
@@ -408,6 +416,7 @@ struct Code {
         if (v->type == DataType::I64)    return *((BasikI64*)v->data)->data        != 0;
         if (v->type == DataType::List)   return  ((BasikList*)v->data)->data->size != 0;
         if (v->type == DataType::String) return  ((BasikString*)v->data)->len      != 0;
+        if (v->type == DataType::Bool)   return *((BasikBool*)v->data)->data;
         return false;
     }
 
@@ -478,9 +487,9 @@ Result run(Code* code) {
 
     // Running
 
-    while (*(uint16_t*)prog) {
-        uint16_t op = *(uint16_t*)prog;
-        prog += 2;
+    while (*(uint8_t*)prog) {
+        uint8_t op = *(uint8_t*)prog;
+        prog += 1;
 
         size_t instr = prog-code->orig;
 
@@ -566,6 +575,12 @@ Result run(Code* code) {
             const_data_t* data = const_data[val_addr];
             code->stack_push(new basik_val{DataType::String,new BasikString(data->sz,(const char*)data->data)});
             prog += 4;
+        }
+
+        // NULL
+
+        else if (op == OpCodes::PushNull) {
+            code->stack_push(nullptr);
         }
 
         // List
@@ -680,6 +695,39 @@ Result run(Code* code) {
                 return Result{new BasikException(format("Unsupported '/' for `%s`\n",get_data_type_str(a->type)),instr,code),nullptr};
         }
 
+        else if (op == OpCodes::Equals) {
+            basik_val* b = code->stack_pop();
+            basik_val* a = code->stack_pop();
+            if (a == nullptr) {
+                code->stack_push(new basik_val{DataType::Bool,new BasikBool(b == nullptr)});
+            } else if (a->type == DataType::Char) {
+                if (b == nullptr) code->stack_push(new basik_val{DataType::Bool,new BasikBool(false)});
+                else {
+                    if (b->type != DataType::Char) return Result{new BasikException(format("Unsupported '==' betwen Char and %s",get_data_type_str(b->type)),instr,code),nullptr};
+                    code->stack_push(new basik_val{DataType::Bool,new BasikBool(*((BasikChar*)a->data)->data==(*((BasikChar*)b->data)->data))});
+                }
+            } else if (a->type == DataType::I16) {
+                if (b == nullptr) code->stack_push(new basik_val{DataType::Bool,new BasikBool(false)});
+                else {
+                    if (b->type != DataType::I16) return Result{new BasikException(format("Unsupported '==' betwen I16 and %s",get_data_type_str(b->type)),instr,code),nullptr};
+                    code->stack_push(new basik_val{DataType::Bool,new BasikBool(*((BasikI16*)a->data)->data==(*((BasikI16*)b->data)->data))});
+                }
+            } else if (a->type == DataType::I32) {
+                if (b == nullptr) code->stack_push(new basik_val{DataType::Bool,new BasikBool(false)});
+                else {
+                    if (b->type != DataType::I32) return Result{new BasikException(format("Unsupported '==' betwen I32 and %s",get_data_type_str(b->type)),instr,code),nullptr};
+                    code->stack_push(new basik_val{DataType::Bool,new BasikBool(*((BasikI32*)a->data)->data==(*((BasikI32*)b->data)->data))});
+                }
+            } else if (a->type == DataType::I64) {
+                if (b == nullptr) code->stack_push(new basik_val{DataType::Bool,new BasikBool(false)});
+                else {
+                    if (b->type != DataType::I64) return Result{new BasikException(format("Unsupported '==' betwen I64 and %s",get_data_type_str(b->type)),instr,code),nullptr};
+                    code->stack_push(new basik_val{DataType::Bool,new BasikBool(*((BasikI64*)a->data)->data==(*((BasikI64*)b->data)->data))});
+                }
+            } else
+                return Result{new BasikException(format("Unsupported '==' for `%s`\n",get_data_type_str(a->type)),instr,code),nullptr};
+        }
+
         // Stack
 
         else if (op == OpCodes::Pop) {
@@ -786,6 +834,14 @@ Result run(Code* code) {
 
 }
 
+void print_repr(basik_val* v) {
+         if (v->type == DataType::Char)   printf("'%u'",*((BasikChar*)v->data)->data); // Should escape it
+    else if (v->type == DataType::I16)    printf("%di16",  *((BasikI16*)v->data)->data);
+    else if (v->type == DataType::I32)    printf("%di32",  *((BasikI32*)v->data)->data);
+    else if (v->type == DataType::I64)    printf("%zii64", *((BasikI64*)v->data)->data);
+    else if (v->type == DataType::String) printf("\"%s\"",   ((BasikString*)v->data)->data); // Should also escape it
+}
+
 Result basik_std_print(Code* code, size_t argc, basik_val** argv) {
     for (size_t i = 0; i < argc; i++) {
         basik_val* arg = argv[i];
@@ -796,6 +852,7 @@ Result basik_std_print(Code* code, size_t argc, basik_val** argv) {
             else if (arg->type == DataType::I32)    printf("%d", *((BasikI32*)arg->data)->data);
             else if (arg->type == DataType::I64)    printf("%zi",*((BasikI64*)arg->data)->data);
             else if (arg->type == DataType::String) printf("%s",  ((BasikString*)arg->data)->data);
+            else if (arg->type == DataType::Bool)   printf("%s", *((BasikBool*)arg->data)->data ? "true" : "false");
             else printf("<object at %p>",arg);
         }
         printf(" ");
@@ -804,62 +861,28 @@ Result basik_std_print(Code* code, size_t argc, basik_val** argv) {
     return Result{nullptr,nullptr};
 }
 
-int main() {
+int main(int argc, const char** argv) {
 
-    /*
-        In this example, `bin` is the bytecode for the main code.
-        It calls to the function `fun`, which has its bytecode defined in `bin2`.
-        `fun` has a dynvar `print` defined to it, which points to a custom print function for the language.
-        And the main function has `fun` defined, which it calls, which in turn calls to `print`.
-        
-        Not sure if that's clear, but that's pretty much what the program does atm.
-    */
+    if (argc == 1) {
+        printf("Please provide a program to run.\n");
+        exit(1);
+    }
 
-    uint8_t* bin = (uint8_t*)
-        "\x00\x00\x00\x00"         // Const data pool
-        "\x00\x00\x00\x00"         // Variable data pool
-  
-        "\x04\x00"                 // Load Dyn
-            "fun\0"                // 'fun'
-
-        "\x0a\x00"                 // List Begin
-        "\x0b\x00"                 // List End
-
-        "\x18\x00"                 // Call
-
-        "\x00\x00"                 // End of program
-    ;
-
-    uint8_t* bin2 = (uint8_t*)
-        "\x01\x00\x00\x00"         // Const data pool
-            "\x0f\x00\x00\x00"     //
-            "Hello, World !\x00"   //
-  
-        "\x00\x00\x00\x00"         // Variable data pool
-  
-        "\x04\x00"                 // Load Dyn
-            "print\0"              // 'print'
-
-        "\x0a\x00"                 // List Begin
-            "\x05\x00"             // Push String
-                "\x00\x00\x00\x00" // 0
-        "\x0b\x00"                 // List End
-
-        "\x18\x00"                 // Call
-
-        "\x00\x00"                 // End of program
-    ;
+    FILE* f = fopen64(argv[1],"r");
+    fseeko64(f,0,SEEK_END);
+    size_t bin_len = ftello64(f);
+    fseeko64(f,0,SEEK_SET);
+    uint8_t* bin = new uint8_t[bin_len+1];
+    fread(bin,1,bin_len,f);
+    fclose(f);
 
     gc_t* gc = new gc_t();
     Globals* glob = new Globals();
     Code* code = new Code(gc,glob,(const char*)bin);
     
-    Code* fun = new Code(gc,glob,(const char*)bin2);
-
     pre_run(code);
 
-    fun->dynvar_set("print",new basik_val{DataType::Function,new BasikFunction(basik_std_print)});
-    code->dynvar_set("fun",new basik_val{DataType::Function,new BasikFunction(fun)});
+    code->dynvar_set("print",new basik_val{DataType::Function,new BasikFunction(basik_std_print)});
 
     Result res = run(code);
 

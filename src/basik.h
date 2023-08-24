@@ -38,7 +38,7 @@ struct Buffer;
 
 // Simple Data //
 
-enum OpCodes : uint16_t {
+enum OpCodes : uint8_t {
     End,
     StoreSimple,
     LoadSimple,
@@ -63,7 +63,9 @@ enum OpCodes : uint16_t {
     JumpIf,
     JumpIfNot,
     Return,
-    Call
+    Call,
+    PushNull,
+    Equals
 };
 
 enum DataType : uint16_t {
@@ -73,7 +75,8 @@ enum DataType : uint16_t {
     I32,
     I64,
     List,
-    Function
+    Function,
+    Bool
 };
 
 enum FunctionKind : uint8_t {
@@ -167,6 +170,13 @@ struct BasikFunction {
     BasikFunction(Code*code);
     BasikFunction(Result(*callback)(Code*,size_t,basik_val**));
     ~BasikFunction();
+};
+
+struct BasikBool {
+    bool* data;
+
+    BasikBool(bool data);
+    ~BasikBool();
 };
 
 struct BasikException {

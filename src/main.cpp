@@ -254,6 +254,7 @@ struct Env {
     const char* bytecode;
     uint8_t* ptr;
     uint8_t* orig;
+    uint8_t* prog;
     gc_t gc;
 
     Env() {
@@ -376,6 +377,7 @@ void pre_run(Env* env) {
     }
 
     env->orig = ptr;
+    env->prog = ptr;
 
 }
 
@@ -392,15 +394,16 @@ Result run(Env* env) {
     Stack<basik_var> &dynamic_vars = env->dynamic_vars;
     const_data_t**   &const_data   = env->const_data;
 
-    uint8_t* &ptr = env->ptr;
+    uint8_t* &ptr  = env->ptr;
+    uint8_t* &prog = env->prog;
 
     // Running
-
-    uint8_t* prog = ptr;
 
     while (*(uint16_t*)prog) {
         uint16_t op = *(uint16_t*)prog;
         prog += 2;
+
+        size_t instr = prog-env->orig;
 
         // printf("----- %d %zu -----\n",op,stacki);
 
@@ -414,10 +417,7 @@ Result run(Env* env) {
         else if (op == OpCodes::StoreSimple) {
             basik_val* val = env->stack_pop();
             uint32_t var = *(uint32_t*)prog; prog += 4;
-            if (val == nullptr) {
-                fprintf(stderr,"Got NULL for StoreSimple\n");
-                exit(1);
-            }
+            if (val == nullptr) return Result{new BasikException{"Got NULL for StoreSimple",instr},nullptr};
             if (simple_vars[var]->data != nullptr) gc.remove_ref(simple_vars[var]->data);
             gc.add_ref(val);
             simple_vars[var]->data = val;
@@ -425,10 +425,7 @@ Result run(Env* env) {
 
         else if (op == OpCodes::StoreDynamic) {
             basik_val* val = env->stack_pop();
-            if (val == nullptr) {
-                fprintf(stderr,"Got NULL for StoreDynamic\n");
-                exit(1);
-            }
+            if (val == nullptr) return Result{new BasikException{"Got NULL for StoreDynamic",instr},nullptr};
             const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
             basik_val* var = env->dynvar_get(varname);
             if (var != nullptr) {
@@ -444,20 +441,14 @@ Result run(Env* env) {
         else if (op == OpCodes::LoadSimple) {
             uint32_t var = *(uint32_t*)prog; prog += 4;
             basik_val* val = simple_vars[var]->data;
-            if (val == nullptr) {
-                fprintf(stderr,"Undefined variable `%s`\n",simple_vars[var]->name);
-                exit(1);
-            }
+            if (val == nullptr) return Result{new BasikException{format("Undefined variable `%s`",simple_vars[var]->name),instr},nullptr};
             env->stack_push(val);
         }
 
         else if (op == OpCodes::LoadDynamic) {
             const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
             basik_val* val = env->dynvar_get(varname);
-            if (val == nullptr) {
-                fprintf(stderr,"Undefined variable `%s`\n",varname);
-                exit(1);
-            }
+            if (val == nullptr) return Result{new BasikException{format("Undefined variable `%s`",varname),instr},nullptr};
             printf("LOAD DYN %s = %d\n",varname,*((BasikI32*)val->data)->data);
             env->stack_push(val);
         }
@@ -507,10 +498,7 @@ Result run(Env* env) {
             list_stack.push(new size_t(stacki));
         }
         else if (op == OpCodes::ListEnd) {
-            if (list_stack.size == 0) {
-                fprintf(stderr,"Attempt to close a list that was not open\n");
-                exit(1);
-            }
+            if (list_stack.size == 0) return Result{new BasikException{format("Attempt to close a list that was not open"),instr},nullptr};
             size_t base = *list_stack.pop();
             size_t list_size = stacki-base;
             BasikList* list = new BasikList();
@@ -522,59 +510,97 @@ Result run(Env* env) {
         }
         else if (op == OpCodes::ListExpand) {
             basik_val* val = env->stack_pop();
-            if (val == nullptr) {
-                fprintf(stderr,"Attempt to expand NULL\n");
-                exit(1);
-            }
+            if (val == nullptr) return Result{new BasikException{format("Attempt to expand NULL"),instr},nullptr};
             if (val->type == DataType::List) {
                 BasikList l = *(BasikList*)val->data;
                 for (size_t i = 0; i < l.data->size; i++) {
                     basik_val v = l[l.data->size-i-1];
                     env->stack_push(new basik_val{v.type,v.data});
                 }
-            } else {
-                fprintf(stderr,"Expand does not support type `%s`\n",get_data_type_str(val->type));
-                exit(1);
-            }
+            } else
+                return Result{new BasikException{format("Expand does not support type `%s`",get_data_type_str(val->type)),instr},nullptr};
         }
 
         // Arithmetic
 
         else if (op == OpCodes::Add) {
-            basik_val* a = env->stack_pop();
             basik_val* b = env->stack_pop();
-            if (a == nullptr || b == nullptr) {
-                fprintf(stderr,"Attempt to add NULL\n");
-                exit(1);
-            }
+            basik_val* a = env->stack_pop();
+            if (a == nullptr || b == nullptr) return Result{new BasikException{format("Attempt to add NULL"),instr},nullptr};
             if (a->type == DataType::Char) {
-                if (b->type != DataType::Char) {
-                    fprintf(stderr,"Unsupported '+' betwen Char and %s\n",get_data_type_str(b->type));
-                    exit(1);    
-                }
+                if (b->type != DataType::Char) return Result{new BasikException{format("Unsupported '+' betwen Char and %s",get_data_type_str(b->type)),instr},nullptr};
                 env->stack_push(new basik_val{DataType::Char,new BasikChar(*((BasikChar*)a->data)->data+*((BasikChar*)b->data)->data)});
             } else if (a->type == DataType::I16) {
-                if (b->type != DataType::I16) {
-                    fprintf(stderr,"Unsupported '+' betwen I16 and %s\n",get_data_type_str(b->type));
-                    exit(1);    
-                }
+                if (b->type != DataType::I16) return Result{new BasikException{format("Unsupported '+' betwen I16 and %s",get_data_type_str(b->type)),instr},nullptr};
                 env->stack_push(new basik_val{DataType::I16,new BasikI16(*((BasikI16*)a->data)->data+*((BasikI16*)b->data)->data)});
             } else if (a->type == DataType::I32) {
-                if (b->type != DataType::I32) {
-                    fprintf(stderr,"Unsupported '+' betwen I32 and %s\n",get_data_type_str(b->type));
-                    exit(1);    
-                }
+                if (b->type != DataType::I32) return Result{new BasikException{format("Unsupported '+' betwen I32 and %s",get_data_type_str(b->type)),instr},nullptr};
                 env->stack_push(new basik_val{DataType::I32,new BasikI16(*((BasikI32*)a->data)->data+*((BasikI32*)b->data)->data)});
             } else if (a->type == DataType::I64) {
-                if (b->type != DataType::I64) {
-                    fprintf(stderr,"Unsupported '+' betwen I64 and %s\n",get_data_type_str(b->type));
-                    exit(1);    
-                }
+                if (b->type != DataType::I64) return Result{new BasikException{format("Unsupported '+' betwen I64 and %s",get_data_type_str(b->type)),instr},nullptr};
                 env->stack_push(new basik_val{DataType::I64,new BasikI64(*((BasikI64*)a->data)->data+*((BasikI64*)b->data)->data)});
-            } else {
-                fprintf(stderr,"Unsupported data type for '+': `%s`\n",get_data_type_str(a->type));
-                exit(1);
-            }
+            } else
+                return Result{new BasikException{format("Unsupported '+' for `%s`\n",get_data_type_str(a->type)),instr},nullptr};
+        }
+
+        else if (op == OpCodes::Sub) {
+            basik_val* b = env->stack_pop();
+            basik_val* a = env->stack_pop();
+            if (a == nullptr || b == nullptr) return Result{new BasikException{format("Attempt to add NULL"),instr},nullptr};
+            if (a->type == DataType::Char) {
+                if (b->type != DataType::Char) return Result{new BasikException{format("Unsupported '-' betwen Char and %s",get_data_type_str(b->type)),instr},nullptr};
+                env->stack_push(new basik_val{DataType::Char,new BasikChar(*((BasikChar*)a->data)->data-*((BasikChar*)b->data)->data)});
+            } else if (a->type == DataType::I16) {
+                if (b->type != DataType::I16) return Result{new BasikException{format("Unsupported '-' betwen I16 and %s",get_data_type_str(b->type)),instr},nullptr};
+                env->stack_push(new basik_val{DataType::I16,new BasikI16(*((BasikI16*)a->data)->data-*((BasikI16*)b->data)->data)});
+            } else if (a->type == DataType::I32) {
+                if (b->type != DataType::I32) return Result{new BasikException{format("Unsupported '-' betwen I32 and %s",get_data_type_str(b->type)),instr},nullptr};
+                env->stack_push(new basik_val{DataType::I32,new BasikI16(*((BasikI32*)a->data)->data-*((BasikI32*)b->data)->data)});
+            } else if (a->type == DataType::I64) {
+                if (b->type != DataType::I64) return Result{new BasikException{format("Unsupported '-' betwen I64 and %s",get_data_type_str(b->type)),instr},nullptr};
+                env->stack_push(new basik_val{DataType::I64,new BasikI64(*((BasikI64*)a->data)->data-*((BasikI64*)b->data)->data)});
+            } else
+                return Result{new BasikException{format("Unsupported '-' for `%s`\n",get_data_type_str(a->type)),instr},nullptr};
+        }
+
+        else if (op == OpCodes::Mul) {
+            basik_val* b = env->stack_pop();
+            basik_val* a = env->stack_pop();
+            if (a == nullptr || b == nullptr) return Result{new BasikException{format("Attempt to add NULL"),instr},nullptr};
+            if (a->type == DataType::Char) {
+                if (b->type != DataType::Char) return Result{new BasikException{format("Unsupported '*' betwen Char and %s",get_data_type_str(b->type)),instr},nullptr};
+                env->stack_push(new basik_val{DataType::Char,new BasikChar(*((BasikChar*)a->data)->data*(*((BasikChar*)b->data)->data))});
+            } else if (a->type == DataType::I16) {
+                if (b->type != DataType::I16) return Result{new BasikException{format("Unsupported '*' betwen I16 and %s",get_data_type_str(b->type)),instr},nullptr};
+                env->stack_push(new basik_val{DataType::I16,new BasikI16(*((BasikI16*)a->data)->data*(*((BasikI16*)b->data)->data))});
+            } else if (a->type == DataType::I32) {
+                if (b->type != DataType::I32) return Result{new BasikException{format("Unsupported '*' betwen I32 and %s",get_data_type_str(b->type)),instr},nullptr};
+                env->stack_push(new basik_val{DataType::I32,new BasikI16(*((BasikI32*)a->data)->data*(*((BasikI32*)b->data)->data))});
+            } else if (a->type == DataType::I64) {
+                if (b->type != DataType::I64) return Result{new BasikException{format("Unsupported '*' betwen I64 and %s",get_data_type_str(b->type)),instr},nullptr};
+                env->stack_push(new basik_val{DataType::I64,new BasikI64(*((BasikI64*)a->data)->data*(*((BasikI64*)b->data)->data))});
+            } else
+                return Result{new BasikException{format("Unsupported '*' for `%s`\n",get_data_type_str(a->type)),instr},nullptr};
+        }
+
+        else if (op == OpCodes::Div) {
+            basik_val* b = env->stack_pop();
+            basik_val* a = env->stack_pop();
+            if (a == nullptr || b == nullptr) return Result{new BasikException{format("Attempt to add NULL"),instr},nullptr};
+            if (a->type == DataType::Char) {
+                if (b->type != DataType::Char) return Result{new BasikException{format("Unsupported '/' betwen Char and %s",get_data_type_str(b->type)),instr},nullptr};
+                env->stack_push(new basik_val{DataType::Char,new BasikChar(*((BasikChar*)a->data)->data/(*((BasikChar*)b->data)->data))});
+            } else if (a->type == DataType::I16) {
+                if (b->type != DataType::I16) return Result{new BasikException{format("Unsupported '/' betwen I16 and %s",get_data_type_str(b->type)),instr},nullptr};
+                env->stack_push(new basik_val{DataType::I16,new BasikI16(*((BasikI16*)a->data)->data/(*((BasikI16*)b->data)->data))});
+            } else if (a->type == DataType::I32) {
+                if (b->type != DataType::I32) return Result{new BasikException{format("Unsupported '/' betwen I32 and %s",get_data_type_str(b->type)),instr},nullptr};
+                env->stack_push(new basik_val{DataType::I32,new BasikI16(*((BasikI32*)a->data)->data/(*((BasikI32*)b->data)->data))});
+            } else if (a->type == DataType::I64) {
+                if (b->type != DataType::I64) return Result{new BasikException{format("Unsupported '/' betwen I64 and %s",get_data_type_str(b->type)),instr},nullptr};
+                env->stack_push(new basik_val{DataType::I64,new BasikI64(*((BasikI64*)a->data)->data/(*((BasikI64*)b->data)->data))});
+            } else
+                return Result{new BasikException{format("Unsupported '/' for `%s`\n",get_data_type_str(a->type)),instr},nullptr};
         }
 
         // Stack
@@ -615,15 +641,12 @@ Result run(Env* env) {
 
         // ???
 
-        else {
-            fprintf(stderr,"Unknown instruction opcode: `%u`\n",op);
-            exit(1);
-        }
+        else 
+            return Result{new BasikException{format("Unknown instruction opcode: `%u`\n",op),instr},nullptr};
     
         gc.collect();
 
     }
-
 
     return Result{nullptr,nullptr};
 
@@ -664,7 +687,13 @@ int main() {
     env->bytecode = (const char*)ptr;
 
     pre_run(env);
-    run(env);
+
+    Result res = run(env);
+
+    if (res.except != nullptr) {
+        fprintf(stderr,"ERROR: Runtime exception: (%zu)\n  %s\n",res.except->addr,res.except->text);
+        exit(1);
+    }
 
     // printf("`%s` `%u`\n",((BasikString*)simple_vars[0]->data->data)->data,*((BasikI32*)simple_vars[1]->data->data)->data);
 

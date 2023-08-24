@@ -5,6 +5,19 @@
 #include <string.h>
 #include <cinttypes>
 
+#include <memory>
+#include <string>
+#include <stdexcept>
+
+// Not that great, might have to implement this in a better way at some point
+template<typename ... A>
+const char* format(const char* format, A ...args) {
+    int size = snprintf(nullptr,0,format,args...) + 1;
+    char* buff = new char[size];
+    snprintf(buff,(size_t)size,format,args...);
+    return buff;
+}
+
 using namespace std;
 
 // Forward-Decls //
@@ -143,8 +156,10 @@ struct BasikList {
 
 
 struct BasikException {
+    // The text of the error
     const char* text;
-    int64_t code;
+    // The address at which the erorr occured
+    size_t addr;
 };
 
 

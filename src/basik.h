@@ -5,10 +5,6 @@
 #include <string.h>
 #include <cinttypes>
 
-#include <memory>
-#include <string>
-#include <stdexcept>
-
 // Not that great, might have to implement this in a better way at some point
 template<typename ... A>
 const char* format(const char* format, A ...args) {

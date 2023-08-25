@@ -16,14 +16,14 @@ for fn in os.listdir('./tests/python'):
     
 for test, out in tests.items():
     print('[COMPILE] %s'%(test),end='')
-    p = subprocess.Popen('py compiler.py %s %s'%(shlex.quote(os.path.join('./tests/python/',test+'.py')),shlex.quote(os.path.join('./tests/tmp/','python-'+test+'.bsk'))),shell=True,universal_newlines=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    p = subprocess.Popen('python3 compiler.py %s %s'%(shlex.quote(os.path.join('./tests/python/',test+'.py')),shlex.quote(os.path.join('./tests/tmp/','python-'+test+'.bsk'))),shell=True,universal_newlines=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     stdout, stderr = p.communicate()
     if p.returncode != 0:
         errs.add('cmp:'+test)
         errs.add('err:'+test)
-        print('\x1b[G[\x1b[31mCOMPILE\x1b[39m] %s\x1b[K'%(test))
+        print(' '*(max(len(t) for t in tests)-len(test))+' \x1b[31m[FAILED]\x1b[39m')
     else:
-        print('\x1b[G[\x1b[32mCOMPILE\x1b[39m] %s\x1b[K'%(test))
+        print(' '*(max(len(t) for t in tests)-len(test))+' \x1b[32m[SUCCESS]\x1b[39m')
     if stdout: print('\x1b[36m|\x1b[39m '+stdout.replace('\n','\n\x1b[36m|\x1b[39m '))
     if stderr: print('\x1b[31m|\x1b[39m '+stderr.replace('\n','\n\x1b[31m|\x1b[39m '))
     
@@ -38,14 +38,14 @@ for test, out in tests.items():
         if p.returncode != 0:
             errs.add('run:'+test)
             errs.add('err:'+test)
-            print('\x1b[G[\x1b[31mRUN\x1b[39m] %s\x1b[K'%(test))
+            print(' '*(max(len(t) for t in tests)-len(test))+' \x1b[31m[FAILED]\x1b[39m')
         elif stdout != out:
             errs.add('out:'+test)
             errs.add('err:'+test)
-            print('\x1b[G[\x1b[31mRUN\x1b[39m] %s\x1b[K'%(test))
+            print(' '*(max(len(t) for t in tests)-len(test))+' \x1b[31m[FAILED]\x1b[39m')
             print('      \x1b[90m(Output does not match expected output)\x1b[39m')
         else:
-            print('\x1b[G[\x1b[32mRUN\x1b[39m] %s\x1b[K'%(test))
+            print(' '*(max(len(t) for t in tests)-len(test))+' \x1b[32m[SUCCESS]\x1b[39m')
         if stderr: print('\x1b[31m|\x1b[39m '+stderr.replace('\n','\n\x1b[31m|\x1b[39m '))
         os.remove(bsk_file)
     else:

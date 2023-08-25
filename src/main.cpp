@@ -107,7 +107,7 @@ basik_val::~basik_val() {
     else if (this->type == DataType::String)   delete ((BasikString*)    this->data);
     else if (this->type == DataType::List)     delete ((BasikList*)      this->data);
     else if (this->type == DataType::Function) delete ((BasikFunction*)  this->data);
-    else if (this->type == DataType::Bool)     delete ((BasikBool *)     this->data);
+    else if (this->type == DataType::Bool)     delete ((BasikBool*)      this->data);
     else {
         fprintf(stderr,"Attempt to destroy unsupported `%s` (%u)\n",get_data_type_str(this->type),this->type);
         exit(1);

@@ -107,6 +107,7 @@ basik_val::~basik_val() {
     else if (this->type == DataType::String)   delete ((BasikString*)    this->data);
     else if (this->type == DataType::List)     delete ((BasikList*)      this->data);
     else if (this->type == DataType::Function) delete ((BasikFunction*)  this->data);
+    else if (this->type == DataType::Bool)     delete ((BasikBool *)     this->data);
     else {
         fprintf(stderr,"Attempt to destroy unsupported `%s` (%u)\n",get_data_type_str(this->type),this->type);
         exit(1);
@@ -725,7 +726,7 @@ Result run(Code* code) {
                     code->stack_push(new basik_val{DataType::Bool,new BasikBool(*((BasikI64*)a->data)->data==(*((BasikI64*)b->data)->data))});
                 }
             } else
-                return Result{new BasikException(format("Unsupported '==' for `%s`\n",get_data_type_str(a->type)),instr,code),nullptr};
+                code->stack_push(new basik_val{DataType::Bool,new BasikBool(a == b)});
         }
 
         // Stack
@@ -845,17 +846,17 @@ void print_repr(basik_val* v) {
 Result basik_std_print(Code* code, size_t argc, basik_val** argv) {
     for (size_t i = 0; i < argc; i++) {
         basik_val* arg = argv[i];
-        if (arg == nullptr) printf("NULL");
+        if (arg == nullptr) printf("None");
         else {
                  if (arg->type == DataType::Char)   putchar(*((BasikChar*)arg->data)->data);
             else if (arg->type == DataType::I16)    printf("%d", *((BasikI16*)arg->data)->data);
             else if (arg->type == DataType::I32)    printf("%d", *((BasikI32*)arg->data)->data);
             else if (arg->type == DataType::I64)    printf("%zi",*((BasikI64*)arg->data)->data);
             else if (arg->type == DataType::String) printf("%s",  ((BasikString*)arg->data)->data);
-            else if (arg->type == DataType::Bool)   printf("%s", *((BasikBool*)arg->data)->data ? "true" : "false");
+            else if (arg->type == DataType::Bool)   printf("%s", *((BasikBool*)arg->data)->data ? "True" : "False");
             else printf("<object at %p>",arg);
         }
-        printf(" ");
+        if (i < argc-1) printf(" ");
     }
     printf("\n");
     return Result{nullptr,nullptr};

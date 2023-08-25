@@ -13,3 +13,5 @@ jobs:
       - uses: actions/checkout@v2
       - name: build
         run:  chmod +x ./tasks/build.bash && ./tasks/build.bash
+      - name: test
+        run:  chmod +x ./tasks/test.bash && ./tasks/test.bash

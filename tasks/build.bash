@@ -2,7 +2,7 @@
 
 TGT="$OSTYPE"
 
-C_WARNINGS="-Wall -Wno-unused-variable"
+C_WARNINGS="-Wall -Wextra -Wno-unused-variable -Wno-unused-parameter -Wno-format-security -Werror"
 C_INPUT="./src/*.cpp"
 C_INCLUDE="-I ./ -I ./src/"
 C_EXTRA=""

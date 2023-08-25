@@ -109,7 +109,7 @@ class Program:
             elif node.value == None:
                 i.append((OpCodes.PushNull,))
             else:
-                assert False, '%s:%d:%d: Got unknown constant kind: %s' % (type(node.value),)
+                assert False, '%s:%d:%d: Got unknown constant kind: %s' % (*loc,type(node.value))
                 
         elif isinstance(node,ast.List):
             i.append((OpCodes.ListBegin,))

@@ -92,6 +92,7 @@ const char* DataTypeStr[] = {
     "I64",
     "List",
     "Function",
+    "Bool"
 };
 
 constexpr inline const char* get_data_type_str(DataType dt);

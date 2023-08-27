@@ -1,8 +1,14 @@
 import ast
 import struct
 from sys import argv
+from os import path
+from pprint import pprint
 
 from typing import Union, Callable
+
+global_vars = set([
+    
+])
 
 if len(argv) <= 2:
     print('Usage: \x1b[35m%s\x1b[39m %s \x1b[36m<output.bsk>\x1b[39m' % (argv[0],'\x1b[32m'+argv[1]+'\x1b[39m' if len(argv)==2 else '\x1b[36m<input.py>\x1b[39m'))
@@ -18,6 +24,49 @@ def auto(key:str=None,init_key:str=None):
     else:
         auto_idx[auto_key] += 1
     return auto_idx[auto_key]
+
+def parts_name(base:str) -> tuple[str,str,list[str]]:
+    type:str = ''
+    name:str = ''
+    tags:list[str] = []
+    
+    s = ''
+    tagz = False
+    for c in base:
+        if tagz:
+            if c == '/':
+                tags.append(s)
+                s = ''
+            else:
+                s += c
+        else:
+            if c == '/': 
+                name = s
+                s = ''
+                tagz = True
+            elif c == ';':
+                type = s
+                s = ''
+            else: s += c
+ 
+    if not tagz:
+        name += s
+    elif s:
+        tags.append(s)
+            
+    return type, name, tags
+
+def jparts_name(type:str, name:str, tags:list[str]) -> str:
+    return type+(';' if type else '')+name+('/' if tags else '')+'/'.join(tags)
+
+def add_name(base:str, ext:str) -> str:
+    typ,nam,tag = parts_name(base)
+    nam += '::'+ext
+    return jparts_name(typ,nam,tag)
+
+def remove_tag(base:str, t:str) -> str:
+    typ,nam,tag = parts_name(base)
+    return jparts_name(typ,nam,list(filter(lambda tt: tt!=t,tag)))
 
 class Label:
     addr: Union[int,None]
@@ -37,6 +86,8 @@ class OpCodes(metaclass=Enum):
     LoadSimple     = auto()
     StoreDynamic   = auto()
     LoadDynamic    = auto()
+    StoreGlobal    = auto()
+    LoadGlobal     = auto()
     PushString     = auto()
     PushChar       = auto()
     PushI16        = auto()
@@ -59,28 +110,45 @@ class OpCodes(metaclass=Enum):
     Call           = auto()
     PushNull       = auto()
     Equals         = auto()
+    LoadFunction   = auto()
     
 class SpecialOp(metaclass=Enum):
-    Label = auto('SpecialOp','OpCode')
-    
+    Label       = auto('SpecialOp','OpCode')
+    AddCompiled = auto()
+
 Instruction = tuple[int,...]
     
 class Program:
     
     constants:    list
     vars:         list[str]
+    globals:      set[str]
     instructions: list[Instruction]
     file:         str
+    name:         str
     
-    def __init__(self,file:str):
+    def __init__(self,file:str,name:str):
         self.constants = []
         self.vars = []
+        self.globals = set([])
         self.instructions = []
         self.file = file
+        self.name = name
         
     def add_constant(self, v) -> int:
         self.constants.append(v)
         return len(self.constants)-1
+    
+    def load_var(self, v:str) -> list[Instruction]:
+        """
+        Loads a variable
+        """
+        if v in self.vars:
+            return [(OpCodes.LoadSimple,self.vars.index(v))]
+        elif v in self.globals:
+            return [(OpCodes.LoadGlobal,v)]
+        else:
+            return [(OpCodes.LoadDynamic,v)]
     
     def explore(self, node:ast.expr, flags:list[str]=[]) -> list[Instruction]:
         i = []
@@ -99,7 +167,8 @@ class Program:
             i.append((OpCodes.Call,))
         
         elif isinstance(node,ast.Name):
-            i.append((OpCodes.LoadDynamic,node.id))
+            # i.append((OpCodes.LoadDynamic,node.id))
+            i.extend(self.load_var(node.id))
             
         elif isinstance(node,ast.Constant):
             if type(node.value) == str:
@@ -174,26 +243,74 @@ class Program:
                 
             else:
                 assert False, '%s:%d:%d: Got unknown comparison : %s' % (*loc,repr(type(node.ops[0]).__name__),)
+                
+        elif isinstance(node,ast.Assign):
+            
+            assert len(node.targets) == 1, '%s:%d:%d Expected 1 assignation target, got %s' % (*loc,repr([n for n in node.targets]))
+            assert isinstance(node.targets[0],ast.Name), '%s:%d:%d Expected Name as an assignation target, got %s' % (*loc,str(type(node.targets[0])))
+            
+            i.extend(self.explore(node.value))
+            
+            tgt:str = node.targets[0].id
+            
+            if tgt in self.globals:
+                i.append((OpCodes.StoreGlobal,tgt))
+            elif tgt in self.vars:
+                i.append((OpCodes.StoreSimple,tgt))
+            else:
+                i.append((OpCodes.StoreDynamic,tgt))
+                
+        elif isinstance(node,ast.FunctionDef):
+            
+            self.globals.add(node.name)
+            
+            n = remove_tag(add_name(self.name,node.name),'main')
+            b = generate_bytecode(n,self.name,node.body,init_instructions=[(OpCodes.LoadDynamic,'...'),(OpCodes.ListExpand,),*((OpCodes.StoreSimple,i) for i,a in reversed(list(enumerate(node.args.args))))],init_vars=[a.arg for a in node.args.args])
+            for c in b: i.append((SpecialOp.AddCompiled,c))
+            i.append((OpCodes.LoadFunction,n))
+            i.append((OpCodes.StoreGlobal,node.name))
+            
+        elif isinstance(node,ast.Global):
+            for n in node.names: self.globals.add(n)
             
         else:
             assert False, '%s:%d:%d: Got unknown node type: %s' % (*loc,repr(type(node)))
         
         return i
     
+class CompiledCode:
+    
+    name:  str
+    bytes: bytearray
+    
+    def __init__(self, name:str, bytes:bytearray):
+        self.name = name
+        self.bytes = bytes
+    
 def repass_u64(l:Label,addr:int) -> Callable[[bytearray],None]:
     def r(b:bytearray):
         b[addr:addr+8] = struct.pack('<Q',l.addr)
     return r
 
-with open(argv[1],'r') as f:
-    m = ast.parse(f.read(),argv[1],'exec',type_comments=True)
+def generate_bytecode( name:str, path:str, body:list[ast.expr], init_instructions:list[Instruction]=[], init_vars:list[str]=[] ) -> list[CompiledCode]:
     
-    p = Program(argv[1])
+    compiled:list[CompiledCode] = []
+
+    p = Program(path,name)
+    p.globals = global_vars
     
-    for node in m.body:
+    p.instructions.extend(init_instructions)
+    p.vars.extend(init_vars)
+    
+    for node in body:
         p.instructions.extend(p.explore(node) or [])
+        
+    p.instructions.append((OpCodes.PushNull,))
+    p.instructions.append((OpCodes.Return,))
     
-    header = b''
+    pprint(p.instructions)
+    
+    header = bytearray()
     
     header += struct.pack('<I',len(p.constants))
     for c in p.constants:
@@ -202,7 +319,7 @@ with open(argv[1],'r') as f:
             header += bytes(c,'utf-8') + b'\0'
         else:
             assert False, 'Unsupported constant type `%s`' % (repr(type(c)),)
-            
+        
     header += struct.pack('<I',len(p.vars))
     for v in p.vars:
         header += bytes(v,'utf-8') + b'\0'
@@ -217,13 +334,19 @@ with open(argv[1],'r') as f:
             
             if i[0] == SpecialOp.Label:
                 i[1].addr = len(bytecode)
+                
+            elif i[0] == SpecialOp.AddCompiled:
+                compiled.append(i[1])
             
         else:
         
             bytecode += struct.pack('<B',i[0])
             
-            if i[0] == OpCodes.LoadDynamic:
+            if i[0] in (OpCodes.LoadDynamic,OpCodes.LoadGlobal,OpCodes.LoadFunction,OpCodes.StoreDynamic,OpCodes.StoreGlobal):
                 bytecode += bytes(i[1],'utf-8') + b'\0'
+                
+            elif i[0] in (OpCodes.LoadSimple,OpCodes.StoreSimple):
+                bytecode += struct.pack('<I',i[1])
             
             elif i[0] == OpCodes.PushString:
                 bytecode += struct.pack('<I',i[1])
@@ -247,5 +370,20 @@ with open(argv[1],'r') as f:
     
     for i in repass:
         i[0](bytecode)
+        
+    compiled.append( CompiledCode(name, header+bytecode) )
+        
+    return compiled
+
+with open(argv[1],'r') as f:
+    m = ast.parse(f.read(),argv[1],'exec',type_comments=True)
     
-    with open(argv[2],'wb') as b: b.write(header+(bytecode+b'\0\0'))
+    b = generate_bytecode('file;'+path.basename(argv[1])+'/main',argv[1],m.body)
+    
+    objects = [ bytes(o.name,'utf-8','ignore')+b'\0'+o.bytes for o in b ]
+    
+    with open(argv[2],'wb') as out:
+        out.write(struct.pack('<I',len(objects)))
+        for obj in objects:
+            out.write(struct.pack('<Q',len(obj)))
+            out.write(obj)

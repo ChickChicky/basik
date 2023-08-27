@@ -8,7 +8,7 @@
  * Retreives the string representation of a data type value
  */
 constexpr inline const char* get_data_type_str(DataType dt) {
-    if (dt > sizeof(DataTypeStr)/sizeof(const char*)) return "<INVALID TYPE>";
+    if (dt >= sizeof(DataTypeStr)/sizeof(const char*)) return "<INVALID TYPE>";
     return DataTypeStr[dt];
 }
 
@@ -33,47 +33,41 @@ struct Stack {
     Stack() {
         this->cap = 20;
         this->cap_grow = 20;
-        data = new T*[20];
+        this->data = (T**)malloc(sizeof(T*)*20);
         this->size = 0;
     }
     Stack(size_t size) {
         this->cap = size;
         this->cap_grow = 20;
-        data = new T*[size];
+        this->data = (T**)malloc(sizeof(T*)*size);
         this->size = 0;
     }
     Stack(size_t size, size_t cap_grow) {
         this->cap = size;
         this->cap_grow = cap_grow;
-        this->data = new T*[size];
+        this->data = (T**)malloc(sizeof(T*)*size);
         this->size = 0;
     }
     void grow(size_t size) {
         if (this->cap >= size) return;
-        T** new_data = new T*[size];
+        T** new_data = (T**)malloc(sizeof(T*)*size);
         for (size_t i = 0; i < size; i++) new_data[i] = 0; // Apparently some data from this->data gets copied for no reason as well as some junk
         memcpy(new_data,this->data,this->size*sizeof(T*));
-        // Destroy all of the ghost data at the top of the stack
-        for (size_t i = this->size; i < this->cap; i++) if (this->data[i] != nullptr) delete this->data[i];
-        delete[] this->data;
-        // printf("STAC %zu %zu\n",this->size,this->cap);
+        free(this->data);
         this->data = new_data;
         this->cap = size;
-        // printf("STAK %zu %zu\n",this->size,this->cap);
     }
     void push(T* value) {
         if (this->size >= this->cap-1) this->grow(this->cap+this->cap_grow);
         this->data[this->size++] = value;
     }
     void prune() {
-        T** tmp_data = new T*[this->size];
+        T** tmp_data = (T**)malloc(sizeof(T*)*this->size);
         size_t sz = 0;
-        for (size_t i = this->size; i < this->cap; i++) if (this->data[i] != nullptr) delete this->data[i];
-        for (size_t i = 0; i < this->size; i++)         if (this->data[i] != nullptr) tmp_data[sz++] = this->data[i];
-        delete[] this->data;
-        this->data = new T*[sz];
+        for (size_t i = 0; i < this->size; i++) if (this->data[i] != nullptr) tmp_data[sz++] = this->data[i];
+        free(this->data);
+        this->data = (T**)malloc(sizeof(T*)*sz);
         memcpy(this->data,tmp_data,sz*sizeof(T*));
-        delete[] tmp_data;
         this->size = sz;
         this->cap = sz;
     }
@@ -82,8 +76,18 @@ struct Stack {
         return this->data[--this->size];
     }
     ~Stack() {
-        delete[] this->data;
+        free(this->data);
     }
+};
+
+struct CodeObj {
+    const char* full_name;
+    Stack<const char> tags;
+    const char* type;
+    const char* name;
+    uint8_t* data;
+    size_t data_sz;
+    Code* code;
 };
 
 /**
@@ -93,7 +97,42 @@ struct Stack {
  */
 struct Globals {
 
+    gc_t* gc;
     Stack<basik_var> vars;
+
+    Globals(gc_t* gc) {
+        this->gc = gc;
+    }
+
+    void set(const char* name, basik_val* value) {
+        gc->add_ref(value);
+        for (size_t i = 0; i < vars.size; i++) {
+            basik_var* vv = vars.data[i];
+            if (vv != nullptr && !strcmp(vv->name,name)) {
+                gc->remove_ref(vv->data);
+                vv->data = value;
+                return;
+            }
+        }
+        basik_var* v = new basik_var{value,name};
+        for (size_t i = 0; i < vars.size; i++) {
+            if (vars.data[i] == nullptr) {
+                vars.data[i] = v;
+                return;
+            }
+        }
+        vars.push(v);
+    }
+
+    basik_val* get(const char* name) {
+        for (size_t i = 0; i < vars.size; i++) {
+            basik_var* v = vars.data[i];
+            if (v != nullptr && !strcmp(v->name,name)) {
+                return v->data;
+            }
+        }
+        return nullptr;
+    }
 
 };
 
@@ -150,9 +189,10 @@ BasikI64::~BasikI64() {
 
 // String
 BasikString::BasikString(size_t len, const char* data) {
-    this->data = new uint8_t[len];
+    this->data = new uint8_t[len+1];
     this->len = len;
     memcpy(this->data,data,len);
+    this->data[len-1] = 0;
 }
 BasikString::~BasikString() {
     delete[] this->data;
@@ -176,9 +216,11 @@ BasikList::~BasikList() {
 // Function
 BasikFunction::BasikFunction(Code* code) {
     this->code = code;
+    this->callback = nullptr;
 }
 BasikFunction::BasikFunction(Result(*callback)(Code*,size_t,basik_val**)) {
     this->callback = callback;
+    this->code = nullptr;
 }
 BasikFunction::~BasikFunction() {
 
@@ -209,83 +251,62 @@ Buffer::~Buffer() {
     free(this->_data);
 }
 
+gc_t::gc_t() {
+    this->refs = new Stack<gc_ref>(256,256);
+}
+
+inline bool gc_t::add_ref_ex( basik_val* v, size_t* count ) {
+    if (v == nullptr) return false;
+    for (size_t i = 0; i < refs->size; i++) {
+        gc_ref* r = refs->data[i];
+        if (r != nullptr && refs->data[i]->v == v) {
+            r->c++;
+            // printf("\t\t\t\tGC ADD %p %zu\n",v,r->c);
+            if (count != nullptr) *count = r->c;
+            return false;
+        }
+    }
+    // printf("\t\t\t\tGC NEW %p 1\n",v);
+    if (count != nullptr) *count = 1;
+    refs->push(new gc_ref{v,1});
+    return true;
+}
+
+inline bool gc_t::add_ref( basik_val* v ) {
+    if (v == nullptr) return false;
+    return add_ref_ex(v,nullptr);
+}
+
+bool gc_t::remove_ref( basik_val* v ) {
+    for (size_t i = 0; i < refs->size; i++) {
+        if (refs->data[i] != nullptr && refs->data[i]->v == v) {
+            if(refs->data[i]->c)--refs->data[i]->c;
+            // printf("\t\t\t\tGC REM %p %zu\n",refs->data[i]->v,refs->data[i]->c);
+            return true;
+        }
+    }
+    return false;
+}
+ 
+size_t gc_t::collect( void ) {
+    size_t c = 0;
+    for (size_t i = 0; i < this->refs->size; i++) {
+        gc_ref* &r = this->refs->data[i];
+        if (r != nullptr && r->c == 0) {
+            // printf("\t\t\t\tGC COL %p\n",r->v);
+            delete r->v;
+            delete r;
+            r = nullptr;
+            c++;
+        }
+    }
+    this->refs->prune();
+    return c;
+}
+
 /********************************\ 
 *           Main stuff           *
 \********************************/
-
-/**
- * A structure allowing to store references to stuff and delete them when they're no longer used
- */
-struct gc_t {
-
-    struct gc_ref {
-        basik_val* v;
-        size_t c;  
-    };
-
-    Stack<gc_ref> refs = Stack<gc_ref>(256,256);
-
-    /**
-     * Adds a reference to a pointer, giving back the amount of references to the pointer after the operation
-     * Returns whether a new entry was created
-     */
-    inline bool add_ref_ex( basik_val* v, size_t* count ) {
-        if (v == nullptr) return false;
-        for (size_t i = 0; i < refs.size; i++) {
-            gc_ref* r = refs.data[i];
-            if (r != nullptr && refs.data[i]->v == v) {
-                r->c++;
-                // printf("\t\t\t\tGC ADD %p %zu\n",v,r->c);
-                if (count != nullptr) *count = r->c;
-                return false;
-            }
-        }
-        // printf("\t\t\t\tGC NEW %p 1\n",v);
-        if (count != nullptr) *count = 1;
-        refs.push(new gc_ref{v,1});
-        return true;
-    }
-
-    /**
-     * Adds a reference to a pointer
-     */ 
-    inline bool add_ref( basik_val* v ) {
-        if (v == nullptr) return false;
-        return add_ref_ex(v,nullptr);
-    }
-
-    /**
-     * Removes a reference to a pointer, giving back the amount of references to the pointer after the operation
-     * Returns whether the reference was found
-     */
-    bool remove_ref( basik_val* v ) {
-        for (size_t i = 0; i < refs.size; i++) {
-            if (refs.data[i] != nullptr && refs.data[i]->v == v) {
-                if(refs.data[i]->c)--refs.data[i]->c;
-                // printf("\t\t\t\tGC REM %p %zu\n",refs.data[i]->v,refs.data[i]->c);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    inline size_t collect( void ) {
-        size_t c = 0;
-        for (size_t i = 0; i < this->refs.size; i++) {
-            gc_ref* &r = this->refs.data[i];
-            if (r != nullptr && r->c == 0) {
-                // printf("\t\t\t\tGC COL %p\n",r->v);
-                delete r->v;
-                delete r;
-                r = nullptr;
-                c++;
-            }
-        }
-        this->refs.prune();
-        return c;
-    }
-
-};
 
 struct Code {
 
@@ -305,15 +326,18 @@ struct Code {
     uint8_t* orig;
     uint8_t* prog;
 
+    Stack<CodeObj>* objects;
+
     gc_t* gc;
 
-    Code( gc_t* gc, Globals* glob, const char* bytecode ) {
+    Code( gc_t* gc, Globals* glob, const char* bytecode, Stack<CodeObj>* objects ) {
         this->stack = new basik_val*[65536];
         this->stacki = 0;
         this->gc = gc;
         this->bytecode = bytecode;
         this->glob = glob;
         this->initialized = false;
+        this->objects = objects;
     }
 
     /**
@@ -324,6 +348,7 @@ struct Code {
         for (size_t i = 0; i < dynamic_vars.size; i++) {
             basik_var* vv = dynamic_vars.data[i];
             if (vv != nullptr && !strcmp(vv->name,name)) {
+                gc->remove_ref(vv->data);
                 vv->data = value;
                 return;
             }
@@ -366,35 +391,6 @@ struct Code {
         return false;
     }
 
-    void globvar_set(const char* name, basik_val* value) {
-        gc->add_ref(value);
-        for (size_t i = 0; i < glob->vars.size; i++) {
-            basik_var* vv = glob->vars.data[i];
-            if (vv != nullptr && !strcmp(vv->name,name)) {
-                vv->data = value;
-                return;
-            }
-        }
-        basik_var* v = new basik_var{value,name};
-        for (size_t i = 0; i < glob->vars.size; i++) {
-            if (glob->vars.data[i] == nullptr) {
-                glob->vars.data[i] = v;
-                return;
-            }
-        }
-        glob->vars.push(v);
-    }
-
-    basik_val* globvar_get(const char* name) {
-        for (size_t i = 0; i < glob->vars.size; i++) {
-            basik_var* v = glob->vars.data[i];
-            if (v != nullptr && !strcmp(v->name,name)) {
-                return v->data;
-            }
-        }
-        return nullptr;
-    }
-
     inline bool stack_push(basik_val* v) {
         if (stacki >= sizeof(stack)) return false;
         gc->add_ref(v);
@@ -422,6 +418,12 @@ struct Code {
     }
 
 };
+
+/********************************\ 
+*             Globals            *
+\********************************/
+
+Stack<CodeObj>* objects = new Stack<CodeObj>();
 
 void pre_run(Code* code) {
     if (code->initialized) return; // Do not init again if it already was
@@ -479,6 +481,7 @@ Result run(Code* code) {
     const char*      &bytecode     = code->bytecode;
     basik_var**      &simple_vars  = code->simple_vars;
     Stack<basik_var> &dynamic_vars = code->dynamic_vars;
+    Globals*         &glob         = code->glob;
     const_data_t**   &const_data   = code->const_data;
 
     uint8_t* &ptr  = code->ptr;
@@ -522,6 +525,16 @@ Result run(Code* code) {
             code->dynvar_set(varname,val);
         }
 
+        else if (op == OpCodes::StoreGlobal) {
+            basik_val* val = code->stack_pop();
+            if (val == nullptr) return Result{new BasikException("Got NULL for StoreGlobal",instr,code),nullptr};
+            const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
+            basik_val* var = glob->get(varname);
+            if (var != nullptr) gc->remove_ref(var);
+            // printf("STOR DYN %s = %d\n",varname,*((BasikI32*)val->data)->data);
+            glob->set(varname,val);
+        }
+
         // Load
 
         else if (op == OpCodes::LoadSimple) {
@@ -534,8 +547,14 @@ Result run(Code* code) {
         else if (op == OpCodes::LoadDynamic) {
             const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
             basik_val* val = code->dynvar_get(varname);
-            if (val == nullptr) return Result{new BasikException(format("Undefined variable `%s`",varname),instr,code),nullptr};
-            // printf("LOAD DYN %s = %d\n",varname,*((BasikI32*)val->data)->data);
+            if (val == nullptr) return Result{new BasikException(format("Undefined local variable `%s`",varname),instr,code),nullptr};
+            code->stack_push(val);
+        }
+
+        else if (op == OpCodes::LoadGlobal) {
+            const char* varname = (const char*)prog; prog += strlen((const char*)prog)+1;
+            basik_val* val = glob->get(varname);
+            if (val == nullptr) return Result{new BasikException(format("Undefined global variable `%s`",varname),instr,code),nullptr};
             code->stack_push(val);
         }
 
@@ -725,6 +744,23 @@ Result run(Code* code) {
                     if (b->type != DataType::I64) return Result{new BasikException(format("Unsupported '==' betwen I64 and %s",get_data_type_str(b->type)),instr,code),nullptr};
                     code->stack_push(new basik_val{DataType::Bool,new BasikBool(*((BasikI64*)a->data)->data==(*((BasikI64*)b->data)->data))});
                 }
+            } else if (a->type == DataType::String) {
+                if (b == nullptr) code->stack_push(new basik_val{DataType::Bool,new BasikBool(false)});
+                else {
+                    if (b->type != DataType::String) return Result{new BasikException(format("Unsupported '==' betwen String and %s",get_data_type_str(b->type)),instr,code),nullptr};
+                    const char* da = (const char*)((BasikString*)a->data)->data;
+                    const char* db = (const char*)((BasikString*)b->data)->data;
+                    /*printf("%zu %zu\n",strlen(da),strlen(db));
+                    printf("`%s` `%s`\n",da,db);
+                    for (size_t i = 0; i < strlen(da); i++) {
+                        printf("%d\n",da[i]);
+                    }
+                    printf("\n");
+                    for (size_t i = 0; i < strlen(db); i++) {
+                        printf("%d\n",db[i]);
+                    }*/
+                    code->stack_push(new basik_val{DataType::Bool,new BasikBool(!strcmp((const char*)((BasikString*)a->data)->data,(const char*)((BasikString*)b->data)->data))});
+                }
             } else
                 code->stack_push(new basik_val{DataType::Bool,new BasikBool(a == b)});
         }
@@ -798,11 +834,21 @@ Result run(Code* code) {
             }
         }
 
+        else if (op == OpCodes::LoadFunction) {
+            const char* id = (const char*)prog; prog += strlen((const char*)prog)+1;
+            for (size_t i = 0; i < objects->size; i++) {
+                CodeObj* obj = objects->data[i];
+                if (!strcmp(obj->full_name,id)) {
+                    code->stack_push(new basik_val{DataType::Function,new BasikFunction(obj->code)});
+                    break;
+                }
+            }
+        }
+
         // ???
 
         else 
             return Result{new BasikException(format("Unknown instruction opcode: `%u`\n",op),instr,code),nullptr};
-
 
         gc->collect();
     
@@ -835,6 +881,23 @@ Result run(Code* code) {
 
 }
 
+bool ends_with(const char* str, const char* end) {
+    size_t strl = strlen(str);
+    size_t endl = strlen(end);
+    if (strl < endl) return false;
+    for (size_t i = 0; i < endl; i++)
+        if (str[strl-i-1] != end[endl-i-1]) 
+            return false;
+    return true;
+}
+
+bool has( Stack<const char> s, const char* v ) {
+    for (size_t i = 0; i < s.size; i++) {
+        if (!strcmp(s.data[i],v)) return true;
+    }
+    return true;
+}
+
 void print_repr(basik_val* v) {
          if (v->type == DataType::Char)   printf("'%u'",*((BasikChar*)v->data)->data); // Should escape it
     else if (v->type == DataType::I16)    printf("%di16",  *((BasikI16*)v->data)->data);
@@ -862,6 +925,14 @@ Result basik_std_print(Code* code, size_t argc, basik_val** argv) {
     return Result{nullptr,nullptr};
 }
 
+Result basik_std_input(Code* code, size_t argc, basik_val** argv) {
+    char* value = new char[65536];
+    scanf("%s",value);
+    BasikString* val = new BasikString(strlen(value)+1,value);
+    delete value;
+    return Result{nullptr,new basik_val{DataType::String,val}};
+}
+
 int main(int argc, const char** argv) {
 
     if (argc == 1) {
@@ -873,17 +944,93 @@ int main(int argc, const char** argv) {
     fseeko64(f,0,SEEK_END);
     size_t bin_len = ftello64(f);
     fseeko64(f,0,SEEK_SET);
-    uint8_t* bin = new uint8_t[bin_len+1];
-    fread(bin,1,bin_len,f);
+    uint8_t* raw_bin = new uint8_t[bin_len+1];
+    fread(raw_bin,1,bin_len,f);
     fclose(f);
 
+    uint32_t object_count = *(uint32_t*)raw_bin; raw_bin += 4;
+    for (uint32_t i = 0; i < object_count; i++) {
+        CodeObj* obj = new CodeObj();
+        uint64_t object_sz = *(uint64_t*)raw_bin;
+        const char* object_full_name = (const char*)raw_bin+8;
+        size_t object_full_name_len = strlen(object_full_name);
+        uint8_t* object_data = raw_bin+8+object_full_name_len;
+        size_t object_type_sep = -1llu;
+        for (size_t i = 0; i < object_full_name_len; i++) {
+            if (object_full_name[i] == ';') {
+                object_type_sep = i;
+                break;
+            }
+        }
+        size_t np = 0;
+        if (object_type_sep != -1llu) {
+            obj->type = new char[object_type_sep+1];
+            memcpy((void*)obj->type,object_full_name,object_type_sep);
+            np = object_type_sep+1;
+        }
+        size_t object_tags_sep = object_full_name_len;
+        for (size_t i = np; i < object_full_name_len; i++) {
+            if (object_full_name[i] == '/') {
+                object_tags_sep = i;
+                break;
+            }
+        }
+        obj->name = new char[object_tags_sep+1];
+        memcpy((void*)obj->name,object_full_name+np,object_tags_sep-np);
+        if (object_tags_sep != object_full_name_len) {
+            object_tags_sep++;
+            char* n = new char[4096];
+            size_t ni = 0;
+            while (object_tags_sep < object_full_name_len) {
+                if (object_full_name[object_tags_sep] == '/') {
+                    obj->tags.push(n);
+                    n = new char[4096];
+                    ni = 0;
+                } else
+                    n[ni++] = object_full_name[object_tags_sep];
+                object_tags_sep++;
+            }
+            if (ni) {
+                obj->tags.push(n);
+            }
+        }
+        obj->full_name = object_full_name;
+        obj->data = object_data+1;
+        objects->push(obj);
+        raw_bin += object_sz+8;
+    }
+
+    // Use this to debug the objects inside of the file
+    /*printf("Found %zu objects\n",objects.size);
+    for (size_t i = 0; i < objects.size; i++) {
+        CodeObj* obj = objects.data[i];
+        printf("%s : `%s` `%s`\n",obj->full_name,obj->type==nullptr?";nil;":obj->type,obj->name);
+        for (size_t t = 0; t < obj->tags.size; t++) {
+            printf("  - `%s`\n",obj->tags.data[t]);
+        }
+    }*/
+
     gc_t* gc = new gc_t();
-    Globals* glob = new Globals();
-    Code* code = new Code(gc,glob,(const char*)bin);
+    Globals* glob = new Globals(gc);
+
+    glob->set("print",new basik_val{DataType::Function,new BasikFunction(basik_std_print)});
+    glob->set("input",new basik_val{DataType::Function,new BasikFunction(basik_std_input)});
+
+    Code* code = nullptr;
+
+    for (size_t i = 0; i < objects->size; i++) {
+        CodeObj* obj = objects->data[i];
+        obj->code = new Code(gc,glob,(const char*)obj->data,objects);
+        if (has(obj->tags,"main"))
+            code = obj->code;
+    }
+
+    if (code == nullptr) {
+        fprintf(stderr,"Could not find entry point, exitting.\n");
+        return 1;
+    }
     
     pre_run(code);
-
-    code->dynvar_set("print",new basik_val{DataType::Function,new BasikFunction(basik_std_print)});
 
     Result res = run(code);
 

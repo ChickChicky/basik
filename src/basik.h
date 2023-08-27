@@ -36,6 +36,8 @@ struct Result;
 template<typename T> struct Stack;
 struct Buffer;
 
+struct gc_t;
+
 // Simple Data //
 
 enum OpCodes : uint8_t {
@@ -44,6 +46,8 @@ enum OpCodes : uint8_t {
     LoadSimple,
     StoreDynamic,
     LoadDynamic,
+    StoreGlobal,
+    LoadGlobal,
     PushString,
     PushChar,
     PushI16,
@@ -65,7 +69,8 @@ enum OpCodes : uint8_t {
     Return,
     Call,
     PushNull,
-    Equals
+    Equals,
+    LoadFunction
 };
 
 enum DataType : uint16_t {
@@ -227,5 +232,43 @@ struct Buffer {
     Buffer(size_t size, void* data);
 
     ~Buffer();
+
+};
+
+/**
+ * A structure allowing to store references to stuff and delete them when they're no longer used
+ */
+struct gc_t {
+
+    struct gc_ref {
+        basik_val* v;
+        size_t c;  
+    };
+
+    Stack<gc_ref>* refs;
+
+    gc_t();
+
+    /**
+     * Adds a reference to a pointer, giving back the amount of references to the pointer after the operation
+     * Returns whether a new entry was created
+     */
+    inline bool add_ref_ex( basik_val* v, size_t* count );
+
+    /**
+     * Adds a reference to a pointer
+     */ 
+    inline bool add_ref( basik_val* v );
+
+    /**
+     * Removes a reference to a pointer, giving back the amount of references to the pointer after the operation
+     * Returns whether the reference was found
+     */
+    bool remove_ref( basik_val* v );
+
+    /**
+     * Destroys all objects that are no longer used
+     */
+    inline size_t collect( void );
 
 };
